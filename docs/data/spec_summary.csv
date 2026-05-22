@@ -1,0 +1,5 @@
+spec_mid,label,name,cost_per_ml,total_records,total_loss_ml,total_loss_usd,store_count_with_loss
+GS07788-01,脱脂奶 4/1 GAL CS,Cream-O-Land Fat-free Milk 4/1 GAL CS,0.000911,2037,3951276.20,3598.95,18
+GS07786-01,全脂奶 4/1 GAL CS,Cream-O-Land Whole Milk 4/1 GAL CS,0.001052,2144,2677409.70,2815.35,18
+GS07785-01,2% 减脂奶 4/1 GAL CS,Cream-O-Land 2% Reduced fat milk 4/1 GAL CS,0.000983,1806,2525232.50,2481.87,18
+GS07786-02,全脂奶 DSD,Cream-O-Land Whole Milk 1GAL*4bottles/CTN-DSD,0.001059,1,60.00,0.06,1

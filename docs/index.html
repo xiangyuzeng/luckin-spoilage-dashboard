@@ -1,0 +1,861 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1200,initial-scale=1">
+<title>门店脱脂奶过期销毁损耗分析看板</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --primary:#0365C0; --navy:#1A365D; --teal:#00A5A5; --gold:#DCBD23;
+    --red:#C0392B; --amber:#E67E22; --green:#27AE60;
+    --bg:#F5F7FB; --card:#fff; --ink:#1F2937; --muted:#6B7280; --line:#E5E7EB;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; background:var(--bg); color:var(--ink);
+    font-family:Arial,"Helvetica Neue",Helvetica,"PingFang SC","Microsoft YaHei",sans-serif; }
+  header.bar { background:linear-gradient(135deg,var(--primary),var(--navy)); color:#fff;
+    padding:22px 28px; display:flex; justify-content:space-between; align-items:center; box-shadow:0 2px 8px rgba(0,0,0,.08); }
+  header.bar h1 { margin:0; font-size:22px; letter-spacing:.5px; }
+  header.bar .sub { margin-top:6px; font-size:13px; opacity:.92; }
+  .pill { display:inline-block; padding:4px 10px; border-radius:999px; font-size:12px; font-weight:700; }
+  .pill.pass { background:var(--green); color:#fff; }
+  .pill.fail { background:var(--red); color:#fff; }
+  .pill.info { background:rgba(255,255,255,.18); color:#fff; margin-right:6px; }
+
+  .toolbar { position:sticky; top:0; z-index:50; background:#fff; border-bottom:1px solid var(--line);
+    padding:12px 28px; display:flex; flex-wrap:wrap; gap:14px; align-items:center; box-shadow:0 1px 3px rgba(0,0,0,.04); }
+  .toolbar label { font-size:12px; color:var(--muted); margin-right:4px; }
+  .toolbar select, .toolbar button {
+    font-size:13px; padding:6px 10px; border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); }
+  .toolbar button { background:var(--primary); color:#fff; border-color:var(--primary); cursor:pointer; }
+  .toolbar button:hover { filter:brightness(1.05); }
+  .toolbar .group { display:flex; gap:6px; align-items:center; padding:4px 8px; background:var(--bg); border-radius:6px; }
+  .toolbar .group label { margin-right:0; }
+
+  main { padding:22px 28px 60px; }
+  section { background:var(--card); border-radius:12px; box-shadow:0 2px 6px rgba(0,0,0,.04); padding:20px 22px; margin-bottom:22px; }
+  section h2 { margin:0 0 14px; font-size:16px; color:var(--navy); display:flex; align-items:center; gap:10px; }
+  section h2 .tag { font-size:11px; background:var(--bg); color:var(--muted); padding:2px 8px; border-radius:999px; }
+  .note { font-size:12px; color:var(--muted); margin-top:8px; }
+
+  .kpis { display:grid; grid-template-columns:repeat(7,1fr); gap:14px; }
+  @media (max-width:1180px) { .kpis { grid-template-columns:repeat(4,1fr); } }
+  .kpi { background:#fff; border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .kpi .label { font-size:12px; color:var(--muted); }
+  .kpi .value { font-size:22px; font-weight:700; color:var(--navy); margin-top:4px; }
+  .kpi .sub { font-size:11px; color:var(--muted); margin-top:4px; }
+  .kpi.accent .value { color:var(--primary); }
+
+  .alert-strip { display:flex; gap:12px; flex-wrap:wrap; }
+  .alert-card { padding:12px 14px; border-radius:10px; border-left:4px solid; background:#FFFBF1; flex:1 1 320px; }
+  .alert-card.s-yc { border-left-color:var(--red); background:#FDECEA; }
+  .alert-card.s-xz { border-left-color:var(--amber); background:#FFF6E5; }
+  .alert-card .title { font-weight:700; color:var(--navy); }
+  .alert-card .why { font-size:12px; color:var(--muted); margin-top:4px; }
+
+  .chart-wrap { position:relative; height:380px; }
+  .chart-wrap.tall { height:560px; }
+
+  table.league { width:100%; border-collapse:collapse; font-size:13px; }
+  table.league th, table.league td { padding:10px 8px; border-bottom:1px solid var(--line); text-align:right; }
+  table.league th:first-child, table.league td:first-child,
+  table.league th:nth-child(2), table.league td:nth-child(2),
+  table.league th:nth-child(3), table.league td:nth-child(3) { text-align:left; }
+  table.league th { color:var(--muted); font-weight:600; cursor:pointer; user-select:none; background:#FAFBFE; }
+  table.league th:hover { color:var(--primary); }
+  table.league tr.outlier td { background:#FDECEA; }
+  table.league tr.attn td { background:#FFF6E5; }
+  table.league tr:hover td { background:#EEF4FB; }
+  .status-pill { display:inline-block; padding:2px 8px; font-size:11px; border-radius:999px; font-weight:700; color:#fff; }
+  .status-pill.s-yc { background:var(--red); }
+  .status-pill.s-xz { background:var(--amber); }
+  .status-pill.s-zc { background:var(--green); }
+  .sparkline { display:inline-block; vertical-align:middle; }
+
+  table.heatmap { border-collapse:collapse; font-size:12px; }
+  table.heatmap th, table.heatmap td { padding:6px 10px; border:1px solid var(--line); text-align:right; }
+  table.heatmap th { background:#FAFBFE; color:var(--muted); font-weight:600; }
+  table.heatmap th:first-child, table.heatmap td:first-child { text-align:left; }
+  table.heatmap tr.total td, table.heatmap td.total { font-weight:700; }
+  .legend { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); margin-top:10px; }
+  .legend .swatch { width:80px; height:12px; border-radius:3px; background:linear-gradient(90deg,#EAF2FB,#0365C0); }
+
+  .drill-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  .drill-grid .panel { border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .drill-grid h3 { margin:0 0 8px; font-size:14px; color:var(--navy); }
+  .drill-kpis { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .drill-kpis .kpi { padding:10px; }
+  .drill-kpis .kpi .value { font-size:18px; }
+  .op-table { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; }
+  .op-table th, .op-table td { padding:6px 8px; border-bottom:1px solid var(--line); text-align:right; }
+  .op-table th:first-child, .op-table td:first-child { text-align:left; }
+
+  footer { color:var(--muted); font-size:12px; padding:14px 28px 40px; line-height:1.6; }
+
+  @media print {
+    @page { size:Letter landscape; margin:.4in; }
+    body { background:#fff; }
+    .toolbar { display:none; }
+    section { box-shadow:none; border:1px solid var(--line); page-break-inside:avoid; }
+    .chart-wrap { height:300px; }
+    .chart-wrap.tall { height:500px; }
+    header.bar { background:var(--primary) !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    .status-pill,.pill { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  }
+</style>
+</head>
+<body>
+<header class="bar">
+  <div>
+    <h1>Luckin USA 牛奶过期销毁损耗分析看板</h1>
+    <div class="sub">
+      <span id="hdrSpec"></span> · <span id="hdrPeriod"></span> ·
+      <span class="pill info" id="tzBadge"></span>
+      <span class="pill info" id="usdBadge">USD 成本已计入</span>
+      <span class="pill info" id="intBadge">含销量参考</span>
+    </div>
+  </div>
+  <div><span id="reconPill" class="pill pass">对账 PASS</span></div>
+</header>
+
+<div class="toolbar">
+  <div class="group">
+    <label>规格</label>
+    <select id="fSpec"></select>
+  </div>
+  <div class="group">
+    <label>指标</label>
+    <select id="fMetric">
+      <option value="ml">报损量 (mL)</option>
+      <option value="usd">报损金额 (USD)</option>
+      <option value="intensity">损耗强度 (mL / 1k 单)</option>
+    </select>
+  </div>
+  <div><label>月份起</label><select id="fMonthFrom"></select></div>
+  <div><label>月份止</label><select id="fMonthTo"></select></div>
+  <div><label>门店</label><select id="fStore"></select></div>
+  <div><label>排序</label>
+    <select id="fSort">
+      <option value="metric_desc">按当前指标（高→低）</option>
+      <option value="metric_asc">按当前指标（低→高）</option>
+      <option value="latest_desc">按最新月</option>
+      <option value="mom_desc">按最新月环比</option>
+    </select>
+  </div>
+  <button id="btnExportCsv">导出当前 CSV</button>
+  <button id="btnPrint">打印 / 导出 PDF</button>
+</div>
+
+<main>
+  <section id="secKpi"><h2>关键指标 <span class="tag" id="kpiScope"></span></h2>
+    <div class="kpis" id="kpiGrid"></div>
+  </section>
+
+  <section id="secAlerts" style="display:none"><h2>需关注门店</h2>
+    <div class="alert-strip" id="alertStrip"></div>
+  </section>
+
+  <section id="secRank"><h2>门店损耗排名 <span class="tag">主图</span></h2>
+    <div class="chart-wrap tall"><canvas id="chartRank"></canvas></div>
+    <div class="note" id="rankCaveat"></div>
+  </section>
+
+  <section id="secPareto"><h2>门店损耗帕累托（累计占比）</h2>
+    <div class="chart-wrap"><canvas id="chartPareto"></canvas></div>
+  </section>
+
+  <section id="secSpecMix"><h2>门店 × 规格 构成</h2>
+    <div class="chart-wrap"><canvas id="chartSpecMix"></canvas></div>
+    <div class="note">堆叠条形图：每家门店的损耗按规格拆分（脱脂 / 全脂 / 减脂），帮助识别哪种牛奶产生的过期销毁更多。</div>
+  </section>
+
+  <section id="secLeague"><h2>门店对标榜单</h2>
+    <div style="overflow-x:auto"><table class="league" id="tblLeague"></table></div>
+  </section>
+
+  <section id="secTrend"><h2>月度趋势</h2>
+    <div class="chart-wrap"><canvas id="chartTrend"></canvas></div>
+  </section>
+
+  <section id="secHeat"><h2>门店 × 月份 热力矩阵</h2>
+    <div style="overflow-x:auto" id="heatWrap"></div>
+    <div class="legend"><span>低</span><span class="swatch"></span><span>高（颜色越深表示报损量越大；·=该月未开业或为零）</span></div>
+  </section>
+
+  <section id="secNonStore"><h2>非门店调整记录 <span class="tag">参考</span></h2>
+    <div class="note">下列为后台/总部部门的库存调整，不计入门店损耗排名。</div>
+    <div style="overflow-x:auto" id="nonStoreWrap"></div>
+  </section>
+
+  <section id="secDrill"><h2>门店明细 <span class="tag" id="drillStoreLabel"></span></h2>
+    <div class="drill-grid">
+      <div class="panel">
+        <h3>门店关键指标</h3>
+        <div class="drill-kpis" id="drillKpis"></div>
+        <div class="note" id="drillNote"></div>
+      </div>
+      <div class="panel">
+        <h3>月度报损</h3>
+        <div class="chart-wrap" style="height:280px"><canvas id="chartDrillMonthly"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>规格构成</h3>
+        <div class="chart-wrap" style="height:240px"><canvas id="chartDrillSpec"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>操作人构成</h3>
+        <table class="op-table" id="tblOperators"></table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  数据来源：直接读取 SCM 源库 <code>luckyus_scm_shopstock.t_shop_spec_stock_change_record</code>
+  （tenant=LKUS，specific_reason_code=015「过期销毁」）；门店主数据来自 <code>luckyus_opshop.t_shop_info</code>；
+  销量参考来自 <code>luckyus_sales_order.t_order_store_fact</code>（hourly→月汇总）；
+  单位成本来自 <code>luckyus_scm_purchase.t_goods_spec_cost_detail</code>。<br>
+  8th &amp; Broadway 的 Jan-Apr 2026 已与门店导出的 xlsx 文件逐月对账（差异 = 0）。<br>
+  周期：<span id="ftrPeriod"></span> · 生成日期：<span id="ftrGen"></span> ·
+  时区：<span id="ftrTz"></span> · DST drift: <span id="ftrDst"></span> 行 ·
+  对账状态：<span id="ftrRecon"></span><br>
+  自动刷新：<span id="ftrBuild">—</span><br>
+  本看板为只读分析，未修改任何源数据。
+</footer>
+
+<script>
+const DATA = {"meta": {"specs": [{"mid": "GS07788-01", "name": "Cream-O-Land Fat-free Milk 4/1 GAL CS", "label_cn": "脱脂奶 4/1 GAL CS", "spec_cost": 13.79, "cg_dly_ratio": 4.0, "dly_use_ratio": 3785.0, "cost_per_ml": 0.0009108322324966974}, {"mid": "GS07786-01", "name": "Cream-O-Land Whole Milk 4/1 GAL CS", "label_cn": "全脂奶 4/1 GAL CS", "spec_cost": 15.92, "cg_dly_ratio": 4.0, "dly_use_ratio": 3785.0, "cost_per_ml": 0.0010515191545574637}, {"mid": "GS07785-01", "name": "Cream-O-Land 2% Reduced fat milk 4/1 GAL CS", "label_cn": "2% 减脂奶 4/1 GAL CS", "spec_cost": 14.88, "cg_dly_ratio": 4.0, "dly_use_ratio": 3785.0, "cost_per_ml": 0.0009828269484808455}, {"mid": "GS07786-02", "name": "Cream-O-Land Whole Milk 1GAL*4bottles/CTN-DSD", "label_cn": "全脂奶 DSD", "spec_cost": 16.04, "cg_dly_ratio": 1.0, "dly_use_ratio": 15140.0, "cost_per_ml": 0.001059445178335535}], "primary_spec": "GS07788-01", "period_start": "2025-07", "period_end": "2026-05", "months": ["2025-07", "2025-08", "2025-09", "2025-10", "2025-11", "2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05"], "areas": ["Area 1 (NYC)"], "generated": "2026-05-22", "timezone": "America/New_York (DST-aware via zoneinfo)", "reconciliation": "PASS", "has_reference": true, "has_usd": true, "dst_drift_count": 0, "record_count": 5988, "non_store_record_count": 84, "store_count": 19, "non_store_count": 2, "grand_total_ml": 9153978.399999999, "grand_total_usd": 8896.227425495379, "system_monthly_ml": [518291.0, 484477.00000000006, 1076932.9, 1571704.4, 732119.2, 1133372.9, 914349.2, 659836.9, 826229.1, 689077.3, 547588.5], "system_monthly_usd": [517.1856435931306, 470.77877192866566, 1033.2808855350067, 1514.0078192866579, 700.0798018494054, 1098.737438705416, 885.2766904887716, 651.1654549537649, 815.5428889035667, 683.073032694848, 527.0989975561426], "system_monthly_sales": [754013, 870085, 1413951, 1493263, 1325299, 1689998, 1804892, 1832250, 2568579, 2856444, 2426207], "system_monthly_intensity": [687.3767428413038, 556.8157134073108, 761.6479637554625, 1052.5301972927743, 552.4181335683495, 670.6356457226576, 506.5949652389173, 360.12383681266203, 321.66777817618225, 241.23606134060392, 225.6973539355875], "system_mom_pct": [null, -6.524134125423737, 122.28772470106937, 45.9426487945535, -53.418772639435254, 54.80715435409971, -19.32494592027037, -27.83534999538469, 25.21717109182587, -16.599730026453912, -20.53308097654647], "system_latest_mom_pct": -20.53308097654647, "stats_all": {"mean": 481788.3368421052, "median": 181227.0, "q1": 74928.0, "q3": 745179.1000000001, "iqr": 670251.1000000001, "upper_fence": 1750555.7500000002, "std": 519363.98333648656, "n": 19, "sys_total_ml": 9153978.399999999}, "stats_by_spec": {"GS07788-01": {"mean": 207961.9052631579, "median": 66064.0, "q1": 35255.0, "q3": 381246.95, "iqr": 345991.95, "upper_fence": 900234.875, "std": 222271.56822205597, "n": 19, "sys_total_ml": 3951276.2}, "GS07786-01": {"mean": 140916.30000000002, "median": 73512.0, "q1": 17277.5, "q3": 231524.65, "iqr": 214247.15, "upper_fence": 552895.375, "std": 155646.74311631723, "n": 19, "sys_total_ml": 2677409.7}, "GS07785-01": {"mean": 132906.97368421053, "median": 73263.0, "q1": 19834.5, "q3": 194831.59999999998, "iqr": 174997.09999999998, "upper_fence": 457327.24999999994, "std": 153665.08762684907, "n": 19, "sys_total_ml": 2525232.5}, "GS07786-02": {"mean": 60.0, "median": 60.0, "q1": 60.0, "q3": 60.0, "iqr": 0.0, "upper_fence": 60.0, "std": 0.0, "n": 1, "sys_total_ml": 60.0}}}, "stores_all": [{"dept_id": 1127, "shop_no": "US00001", "store_name": "8th & Broadway", "area": "Area 1 (NYC)", "total_loss_ml": 1721274.7999999998, "total_loss_usd": 1677.1409049537651, "total_sales": 3923950, "record_count": 737, "monthly_ml": [255946.9, 225373.30000000002, 178303.5, 271200.0, 123248.2, 218597.90000000002, 156701.0, 101093.0, 105431.1, 46750.0, 38629.9], "monthly_usd": [255.376941347424, 219.35441671070012, 173.2470739762219, 258.26410832232506, 118.43251426684284, 215.96140475561418, 151.56421598414798, 99.07561426684279, 102.68137034346103, 45.74362232496697, 37.43962265521797], "sales_monthly": [389091, 398356, 467770, 467086, 385513, 298141, 246171, 305852, 355478, 423711, 186781], "intensity_monthly": [657.8072995777337, 565.7585175069536, 381.1777155439639, 580.6211275867828, 319.6992059930534, 733.2030817633268, 636.5534526812663, 330.5291448151393, 296.58966237010446, 110.3346384682012, 206.8192160872894], "intensity_total": 438.65869850533255, "active_months": 11, "first_month": "2025-07", "last_active_month": "2026-05", "latest_month_value_ml": 38629.9, "latest_mom_pct": -17.36919786096256, "worst_month": "2025-10", "worst_month_value_ml": 271200.0, "operators": [{"name": "Jian Ming Juo", "qty": 883927.2, "count": 436, "share_pct": 51.353055305288855}, {"name": "Conan Yim", "qty": 536978.2, "count": 177, "share_pct": 31.196541075254224}, {"name": "Huanchun Xu", "qty": 252155.5, "count": 57, "share_pct": 14.649345938254601}, {"name": "Huichen Jiang", "qty": 48213.9, "count": 67, "share_pct": 2.8010576812023276}], "top_operator": "Jian Ming Juo", "top_operator_share_pct": 51.353055305288855, "spec_breakdown": {"GS07788-01": {"ml": 676910.2999999999, "usd": 616.5517197490097, "count": 258}, "GS07786-01": {"ml": 497285.1, "usd": 522.9048079260239, "count": 238}, "GS07785-01": {"ml": 547079.4, "usd": 537.684377278732, "count": 241}}, "rank": 1, "share_of_system_pct": 18.80357069664923, "vs_mean_pct": 257.26784323633535, "vs_median_pct": 849.7893801696215, "z_score": 2.386546820584695, "percentile": 100.0, "status": "异常"}, {"dept_id": 1141, "shop_no": "US00005", "store_name": "54th & 8th", "area": "Area 1 (NYC)", "total_loss_ml": 1333911.5999999999, "total_loss_usd": 1303.3539608322324, "total_sales": 1871521, "record_count": 673, "monthly_ml": [0.0, 27033.5, 228078.5, 603573.0, 90958.3, 110916.9, 72858.4, 58494.0, 94784.0, 26810.0, 20405.0], "monthly_usd": [0.0, 25.94933883751651, 220.39379722589175, 591.4248454425363, 89.03692179656541, 108.92517721268167, 69.53616169088512, 57.18141809775431, 94.8851948480845, 26.061221268163802, 19.959884412153244], "sales_monthly": [0, 66133, 236475, 257454, 228092, 176817, 180002, 154711, 203892, 214830, 153115], "intensity_monthly": [0.0, 408.77474180817444, 964.493075377947, 2344.39161947377, 398.77900145555304, 627.2977145862671, 404.764391506761, 378.08559184544083, 464.8735605124282, 124.7963506028022, 133.2658459327956], "intensity_total": 712.7419890025278, "active_months": 10, "first_month": "2025-08", "last_active_month": "2026-05", "latest_month_value_ml": 20405.0, "latest_mom_pct": -23.890339425587467, "worst_month": "2025-10", "worst_month_value_ml": 603573.0, "operators": [{"name": "Yaqing Zuo", "qty": 730161.3, "count": 154, "share_pct": 54.738357474363376}, {"name": "Juan Ortiz-Fontanez", "qty": 324346.30000000005, "count": 297, "share_pct": 24.315426899353756}, {"name": "Huanchun Xu", "qty": 174945.0, "count": 65, "share_pct": 13.115186943422637}, {"name": "Eric Park", "qty": 104459.0, "count": 157, "share_pct": 7.831028682860245}], "top_operator": "Yaqing Zuo", "top_operator_share_pct": 54.738357474363376, "spec_breakdown": {"GS07788-01": {"ml": 514080.5, "usd": 468.2410894980187, "count": 223}, "GS07786-01": {"ml": 427425.10000000003, "usd": 449.4456797886391, "count": 257}, "GS07785-01": {"ml": 392406.0, "usd": 385.6671915455748, "count": 193}}, "rank": 2, "share_of_system_pct": 14.571933007838428, "vs_mean_pct": 176.86672714893012, "vs_median_pct": 636.0446291115561, "z_score": 1.6407053444170372, "percentile": 94.73684210526315, "status": "正常"}, {"dept_id": 20010, "shop_no": "US00006", "store_name": "102 Fulton", "area": "Area 1 (NYC)", "total_loss_ml": 1234494.2, "total_loss_usd": 1188.4382245046238, "total_sales": 2119099, "record_count": 645, "monthly_ml": [0.0, 41531.0, 273294.30000000005, 339442.19999999995, 177094.59999999995, 137040.6, 71756.40000000001, 53584.0, 101796.4, 38954.7, 0.0], "monthly_usd": [0.0, 40.29647820343462, 259.322439299868, 325.4774713342141, 167.17759319682943, 130.90596743725234, 71.07725284015852, 52.7065964332893, 103.16274887714668, 38.311676882430646, 0.0], "sales_monthly": [0, 40505, 285829, 302193, 251807, 216570, 197533, 177969, 227248, 246615, 172830], "intensity_monthly": [0.0, 1025.3302061473892, 956.146157317837, 1123.2629478512074, 703.2949838566836, 632.777392990719, 363.2628472204645, 301.0861442161275, 447.9528972752235, 157.95754516148654, 0.0], "intensity_total": 582.5561712784537, "active_months": 9, "first_month": "2025-08", "last_active_month": "2026-04", "latest_month_value_ml": 38954.7, "latest_mom_pct": -61.7327331811341, "worst_month": "2025-10", "worst_month_value_ml": 339442.19999999995, "operators": [{"name": "Ya Xin Chen", "qty": 1047866.0999999999, "count": 487, "share_pct": 84.88222139885306}, {"name": "Shangxian Piao", "qty": 186628.09999999998, "count": 158, "share_pct": 15.11777860114693}], "top_operator": "Ya Xin Chen", "top_operator_share_pct": 84.88222139885306, "spec_breakdown": {"GS07788-01": {"ml": 616738.1, "usd": 561.7449404887714, "count": 221}, "GS07786-01": {"ml": 284543.8, "usd": 299.20325601056817, "count": 244}, "GS07785-01": {"ml": 333212.30000000005, "usd": 327.4900280052841, "count": 180}}, "rank": 3, "share_of_system_pct": 13.485876261189345, "vs_mean_pct": 156.23164896259752, "vs_median_pct": 581.1866885177153, "z_score": 1.4492839074484496, "percentile": 89.47368421052632, "status": "正常"}, {"dept_id": 1128, "shop_no": "US00002", "store_name": "28th & 6th", "area": "Area 1 (NYC)", "total_loss_ml": 1157016.7, "total_loss_usd": 1125.6194195508585, "total_sales": 2478154, "record_count": 666, "monthly_ml": [262344.1, 190539.2, 244345.6, 154950.0, 78632.59999999999, 74129.7, 61743.200000000004, 15308.0, 30943.7, 11333.0, 32747.600000000002], "monthly_usd": [261.8087022457067, 185.17853817701445, 234.1390822985469, 147.49629722589168, 77.12600429326288, 71.15837344782037, 59.123753500660506, 15.081794583883747, 31.89295627476884, 11.080877807133422, 31.533039696169084], "sales_monthly": [364922, 365091, 273165, 266065, 237707, 167698, 149761, 141557, 188600, 190441, 133147], "intensity_monthly": [718.9045878297279, 521.8950891695495, 894.4981970603848, 582.3764869486779, 330.79631647364187, 442.04283891280755, 412.27822997976784, 108.14018381288103, 164.07051961823964, 59.5092443328905, 245.95071612578582], "intensity_total": 466.88652117665004, "active_months": 11, "first_month": "2025-07", "last_active_month": "2026-05", "latest_month_value_ml": 32747.600000000002, "latest_mom_pct": 188.9579105267802, "worst_month": "2025-07", "worst_month_value_ml": 262344.1, "operators": [{"name": "Lin Weng", "qty": 771708.9, "count": 251, "share_pct": 66.69816433937385}, {"name": "Afsana Gu", "qty": 348069.2, "count": 356, "share_pct": 30.083334147208074}, {"name": "Jian Ming Juo", "qty": 24728.0, "count": 42, "share_pct": 2.13722066414426}, {"name": "Brionna Jiles", "qty": 12510.6, "count": 17, "share_pct": 1.0812808492738266}], "top_operator": "Lin Weng", "top_operator_share_pct": 66.69816433937385, "spec_breakdown": {"GS07788-01": {"ml": 490280.4, "usd": 446.56319128137375, "count": 214}, "GS07786-01": {"ml": 346033.80000000005, "usd": 363.8611688243065, "count": 263}, "GS07785-01": {"ml": 320702.5, "usd": 315.1950594451782, "count": 189}}, "rank": 4, "share_of_system_pct": 12.639495631757228, "vs_mean_pct": 140.1504170033873, "vs_median_pct": 538.4350565864909, "z_score": 1.3001062546157083, "percentile": 84.21052631578947, "status": "需关注"}, {"dept_id": 1140, "shop_no": "US00003", "store_name": "100 Maiden Ln", "area": "Area 1 (NYC)", "total_loss_ml": 808826.6, "total_loss_usd": 776.3559145970936, "total_sales": 1292740, "record_count": 716, "monthly_ml": [0.0, 0.0, 152911.0, 202539.19999999998, 84236.5, 115895.29999999997, 72063.20000000001, 35167.899999999994, 58642.899999999994, 47191.6, 40179.0], "monthly_usd": [0.0, 0.0, 146.1784927344782, 191.3450969616908, 81.93505495376489, 111.05614313077938, 68.62686571994715, 34.023677542932624, 56.774593461030385, 46.97384180977542, 39.44214828269485], "sales_monthly": [0, 0, 150712, 200465, 153920, 127541, 131879, 114029, 145956, 155563, 112675], "intensity_monthly": [0.0, 0.0, 1014.5907426084186, 1010.3469433566956, 547.2745582120582, 908.6905387287223, 546.4342313787639, 308.4118952196371, 401.7847844555893, 303.36005348315473, 356.5919680497004], "intensity_total": 625.6684252053777, "active_months": 9, "first_month": "2025-09", "last_active_month": "2026-05", "latest_month_value_ml": 40179.0, "latest_mom_pct": -14.859847939039996, "worst_month": "2025-10", "worst_month_value_ml": 202539.19999999998, "operators": [{"name": "Dominique Meadows", "qty": 412915.8000000002, "count": 536, "share_pct": 51.05121419102689}, {"name": "Jay Gregory", "qty": 395910.7999999999, "count": 180, "share_pct": 48.948785808973135}], "top_operator": "Dominique Meadows", "top_operator_share_pct": 51.05121419102689, "spec_breakdown": {"GS07788-01": {"ml": 428400.89999999997, "usd": 390.20134815059475, "count": 255}, "GS07786-01": {"ml": 178505.50000000006, "usd": 187.7019524438574, "count": 236}, "GS07785-01": {"ml": 201920.19999999998, "usd": 198.4526140026421, "count": 225}}, "rank": 5, "share_of_system_pct": 8.83579318911218, "vs_mean_pct": 67.88007059313142, "vs_median_pct": 346.30579328687224, "z_score": 0.6296899162258862, "percentile": 78.94736842105263, "status": "正常"}, {"dept_id": 20032, "shop_no": "US00025", "store_name": "221 Grand", "area": "Area 1 (NYC)", "total_loss_ml": 681531.6000000001, "total_loss_usd": 676.0680565389696, "total_sales": 1204965, "record_count": 309, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 98429.8, 115896.80000000002, 157916.0, 106275.0, 170207.0, 32807.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 93.79615118890355, 112.63843441215325, 158.9542694848085, 105.22436261558784, 175.57316578599736, 29.88167305151915], "sales_monthly": [0, 0, 0, 0, 0, 152358, 269076, 208262, 273980, 110595, 190694], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 646.0428727077017, 430.7214318631168, 758.2564270006051, 387.8932768815242, 1539.011709390117, 172.04002223457476], "intensity_total": 565.602818339122, "active_months": 6, "first_month": "2025-12", "last_active_month": "2026-05", "latest_month_value_ml": 32807.0, "latest_mom_pct": -80.72523456732097, "worst_month": "2026-04", "worst_month_value_ml": 170207.0, "operators": [{"name": "Juliana Li", "qty": 431595.6, "count": 240, "share_pct": 63.32730573314574}, {"name": "Kayen Wu He", "qty": 249936.0, "count": 69, "share_pct": 36.672694266854236}], "top_operator": "Juliana Li", "top_operator_share_pct": 63.32730573314574, "spec_breakdown": {"GS07788-01": {"ml": 244448.0, "usd": 222.65111756935272, "count": 110}, "GS07786-01": {"ml": 346979.7, "usd": 364.8558007926025, "count": 113}, "GS07785-01": {"ml": 90043.9, "usd": 88.4975714663144, "count": 85}, "GS07786-02": {"ml": 60.0, "usd": 0.06356671070013209, "count": 1}}, "rank": 6, "share_of_system_pct": 7.445195632098063, "vs_mean_pct": 41.45871700986321, "vs_median_pct": 276.0651558542602, "z_score": 0.38459205791419854, "percentile": 73.68421052631578, "status": "正常"}, {"dept_id": 20011, "shop_no": "US00004", "store_name": "37th & Broadway", "area": "Area 1 (NYC)", "total_loss_ml": 678251.0, "total_loss_usd": 653.2949214002643, "total_sales": 1537938, "record_count": 483, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 176104.0, 101077.0, 173249.0, 69818.0, 63401.0, 61919.0, 32683.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 164.43166050198144, 97.57722523117575, 168.93800198150598, 68.48158520475566, 61.42744517833555, 60.23167701453106, 32.20732628797886], "sales_monthly": [0, 0, 0, 0, 68260, 210119, 195218, 211966, 295481, 327364, 229530], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 2579.9003808965717, 481.0464546280917, 887.4642707127417, 329.3830142570035, 214.56878784084253, 189.1441942302758, 142.39097285757853], "intensity_total": 441.0132268010804, "active_months": 7, "first_month": "2025-11", "last_active_month": "2026-05", "latest_month_value_ml": 32683.0, "latest_mom_pct": -47.21652481467724, "worst_month": "2025-11", "worst_month_value_ml": 176104.0, "operators": [{"name": "Tunisia Hayward", "qty": 499997.0, "count": 439, "share_pct": 73.71857911009346}, {"name": "Yaqing Zuo", "qty": 178254.0, "count": 44, "share_pct": 26.28142088990654}], "top_operator": "Tunisia Hayward", "top_operator_share_pct": 73.71857911009346, "spec_breakdown": {"GS07788-01": {"ml": 334093.0, "usd": 304.3026730515193, "count": 162}, "GS07786-01": {"ml": 156415.0, "usd": 164.47336856010565, "count": 175}, "GS07785-01": {"ml": 187743.0, "usd": 184.51887978863934, "count": 146}}, "rank": 7, "share_of_system_pct": 7.40935766245636, "vs_mean_pct": 40.777795586670834, "vs_median_pct": 274.25493993720585, "z_score": 0.37827548590447824, "percentile": 68.42105263157895, "status": "正常"}, {"dept_id": 20031, "shop_no": "US00024", "store_name": "15th & 3rd", "area": "Area 1 (NYC)", "total_loss_ml": 355064.9, "total_loss_usd": 345.01308850726554, "total_sales": 676337, "record_count": 408, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 98135.7, 69580.2, 61443.0, 44580.0, 49908.0, 31418.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 93.47079022457066, 67.79284121532363, 60.75383421400265, 43.777845442536325, 48.96481109643331, 30.252966314398943], "sales_monthly": [0, 0, 0, 0, 0, 55066, 123712, 107067, 136004, 151164, 103324], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 1782.1468782915047, 562.4369503362649, 573.8743030065286, 327.78447692714917, 330.1579741208224, 304.0726259145987], "intensity_total": 524.9822204019595, "active_months": 6, "first_month": "2025-12", "last_active_month": "2026-05", "latest_month_value_ml": 31418.0, "latest_mom_pct": -37.04816863027972, "worst_month": "2025-12", "worst_month_value_ml": 98135.7, "operators": [{"name": "Clara Mae Venturina", "qty": 355064.9, "count": 408, "share_pct": 100.0}], "top_operator": "Clara Mae Venturina", "top_operator_share_pct": 100.0, "spec_breakdown": {"GS07788-01": {"ml": 149212.0, "usd": 135.90709907529725, "count": 137}, "GS07786-01": {"ml": 98820.7, "usd": 103.91185891677671, "count": 142}, "GS07785-01": {"ml": 107032.2, "usd": 105.19413051519156, "count": 129}}, "rank": 8, "share_of_system_pct": 3.8788042147881856, "vs_mean_pct": -26.30271991902448, "vs_median_pct": 95.92273778189785, "z_score": -0.24399735235395278, "percentile": 63.1578947368421, "status": "正常"}, {"dept_id": 20008, "shop_no": "US00008", "store_name": "33rd & 10th", "area": "Area 1 (NYC)", "total_loss_ml": 350613.0, "total_loss_usd": 340.04901056803175, "total_sales": 991366, "record_count": 355, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 61993.0, 110540.0, 41865.0, 58732.0, 48016.0, 29467.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 59.59713210039631, 106.11806010568037, 40.77698612945839, 57.89271796565392, 46.923147291941866, 28.74096697490092], "sales_monthly": [0, 0, 0, 0, 0, 142844, 155770, 141938, 181210, 214552, 155052], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 433.9909271652992, 709.636001797522, 294.95272583804194, 324.11014844655375, 223.7965621387822, 190.0459200784253], "intensity_total": 353.6665570536008, "active_months": 6, "first_month": "2025-12", "last_active_month": "2026-05", "latest_month_value_ml": 29467.0, "latest_mom_pct": -38.63087304231922, "worst_month": "2026-01", "worst_month_value_ml": 110540.0, "operators": [{"name": "Yaqing Zuo", "qty": 350613.0, "count": 355, "share_pct": 100.0}], "top_operator": "Yaqing Zuo", "top_operator_share_pct": 100.0, "spec_breakdown": {"GS07788-01": {"ml": 151446.0, "usd": 137.9418982826949, "count": 110}, "GS07786-01": {"ml": 92593.0, "usd": 97.36331307793925, "count": 125}, "GS07785-01": {"ml": 106574.0, "usd": 104.74379920739764, "count": 120}}, "rank": 9, "share_of_system_pct": 3.8301707157185345, "vs_mean_pct": -27.226756401347846, "vs_median_pct": 93.46620536674999, "z_score": -0.25256918279048063, "percentile": 57.89473684210527, "status": "正常"}, {"dept_id": 20035, "shop_no": "US00027", "store_name": "52nd & Madison", "area": "Area 1 (NYC)", "total_loss_ml": 181227.0, "total_loss_usd": 176.5980079260238, "total_sales": 656915, "record_count": 246, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 9528.0, 77343.0, 46415.0, 47941.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 9.594861955085866, 75.2113249669749, 45.16209709379129, 46.62972391017174], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 16072, 214714, 256440, 169689], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 592.8322548531609, 360.2140521810408, 180.99750428950242, 282.52273276405657], "intensity_total": 275.8758743520851, "active_months": 4, "first_month": "2026-02", "last_active_month": "2026-05", "latest_month_value_ml": 47941.0, "latest_mom_pct": 3.2877302596143485, "worst_month": "2026-03", "worst_month_value_ml": 77343.0, "operators": [{"name": "Wenny Lin", "qty": 181227.0, "count": 246, "share_pct": 100.0}], "top_operator": "Wenny Lin", "top_operator_share_pct": 100.0, "spec_breakdown": {"GS07788-01": {"ml": 63496.0, "usd": 57.83420343461028, "count": 84}, "GS07786-01": {"ml": 44468.0, "usd": 46.758953764861275, "count": 82}, "GS07785-01": {"ml": 73263.0, "usd": 72.00485072655219, "count": 80}}, "rank": 10, "share_of_system_pct": 1.9797621545622177, "vs_mean_pct": -62.38451906331787, "vs_median_pct": 0.0, "z_score": -0.578710396726484, "percentile": 52.63157894736842, "status": "正常"}, {"dept_id": 20008, "shop_no": "JFK-KIOSK", "store_name": "JFK 24", "area": "Area 1 (NYC)", "total_loss_ml": 160382.0, "total_loss_usd": 159.19240488771467, "total_sales": 991366, "record_count": 123, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 1845.0, 117157.0, 9961.0, 13210.0, 1320.0, 11680.0, 5209.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 1.9400528401585206, 116.28907397622194, 9.861103038309116, 12.963142007926024, 1.2954339498018494, 11.639738441215323, 5.203860634081903], "sales_monthly": [0, 0, 0, 0, 0, 142844, 155770, 141938, 181210, 214552, 155052], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 820.1744560499567, 63.946844706939714, 93.06880468937142, 7.284366204955576, 54.43901711473209, 33.59518097154503], "intensity_total": 161.77879814316813, "active_months": 7, "first_month": "2025-11", "last_active_month": "2026-05", "latest_month_value_ml": 5209.0, "latest_mom_pct": -55.40239726027397, "worst_month": "2025-12", "worst_month_value_ml": 117157.0, "operators": [{"name": "Yaqing Zuo", "qty": 160382.0, "count": 123, "share_pct": 100.0}], "top_operator": "Yaqing Zuo", "top_operator_share_pct": 100.0, "spec_breakdown": {"GS07788-01": {"ml": 48407.0, "usd": 44.090655878467636, "count": 37}, "GS07786-01": {"ml": 73512.0, "usd": 77.2992760898283, "count": 48}, "GS07785-01": {"ml": 38463.0, "usd": 37.802472919418754, "count": 38}}, "rank": 11, "share_of_system_pct": 1.7520469569821142, "vs_mean_pct": -66.71110781733984, "vs_median_pct": -11.502149238248164, "z_score": -0.6188460254354446, "percentile": 47.368421052631575, "status": "正常"}, {"dept_id": 20027, "shop_no": "US00020", "store_name": "21st & 3rd", "area": "Area 1 (NYC)", "total_loss_ml": 143331.0, "total_loss_usd": 140.83633883751654, "total_sales": 488982, "record_count": 246, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 42410.0, 55200.0, 17059.0, 28662.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 41.5716750330251, 54.280933289299874, 16.7453606340819, 28.23836988110964], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 110889, 140982, 136550, 100561], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 382.4545265986707, 391.5393454483551, 124.92859758330283, 285.02103201042155], "intensity_total": 293.12121918598234, "active_months": 4, "first_month": "2026-02", "last_active_month": "2026-05", "latest_month_value_ml": 28662.0, "latest_mom_pct": 68.01688258397327, "worst_month": "2026-03", "worst_month_value_ml": 55200.0, "operators": [{"name": "Darwin Coronel", "qty": 114669.0, "count": 198, "share_pct": 80.00293028026037}, {"name": "Javier Cruz", "qty": 28662.0, "count": 48, "share_pct": 19.997069719739624}], "top_operator": "Darwin Coronel", "top_operator_share_pct": 80.00293028026037, "spec_breakdown": {"GS07788-01": {"ml": 54595.0, "usd": 49.72688573315719, "count": 89}, "GS07786-01": {"ml": 56736.0, "usd": 59.65899075297227, "count": 91}, "GS07785-01": {"ml": 32000.0, "usd": 31.450462351387053, "count": 66}}, "rank": 12, "share_of_system_pct": 1.5657782194460939, "vs_mean_pct": -70.25021383052422, "vs_median_pct": -20.910791438361834, "z_score": -0.6516765653786678, "percentile": 42.10526315789473, "status": "正常"}, {"dept_id": 20019, "shop_no": "US00012", "store_name": "16th & 6th", "area": "Area 1 (NYC)", "total_loss_ml": 81524.0, "total_loss_usd": 79.65360237780716, "total_sales": 204282, "record_count": 147, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 27780.0, 42411.0, 11333.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 27.03596169088507, 41.52731505944521, 11.090325627476883], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 23824, 104767, 75691], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1166.0510409670921, 404.81258411522714, 149.7271802460002], "intensity_total": 399.0757873919386, "active_months": 3, "first_month": "2026-03", "last_active_month": "2026-05", "latest_month_value_ml": 11333.0, "latest_mom_pct": -73.27815896819222, "worst_month": "2026-04", "worst_month_value_ml": 42411.0, "operators": [{"name": "Juliana Li", "qty": 62838.0, "count": 89, "share_pct": 77.07914233845247}, {"name": "Joselyn Pacheco Trejo", "qty": 18686.0, "count": 58, "share_pct": 22.92085766154752}], "top_operator": "Juliana Li", "top_operator_share_pct": 77.07914233845247, "spec_breakdown": {"GS07788-01": {"ml": 25390.0, "usd": 23.126030383091138, "count": 53}, "GS07786-01": {"ml": 19763.0, "usd": 20.781173051519158, "count": 48}, "GS07785-01": {"ml": 36371.0, "usd": 35.746398943196844, "count": 46}}, "rank": 13, "share_of_system_pct": 0.8905854529873046, "vs_mean_pct": -83.07887639324122, "vs_median_pct": -55.015533005567605, "z_score": -0.7706817370560353, "percentile": 36.84210526315789, "status": "正常"}, {"dept_id": 20009, "shop_no": "US00007", "store_name": "108th & Broadway", "area": "Area 1 (NYC)", "total_loss_ml": 75369.0, "total_loss_usd": 72.20107133421403, "total_sales": 191039, "record_count": 61, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1756.0, 73613.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.6929498018494056, 70.50812153236463], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 7395, 183644], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 237.4577417173766, 400.8462024351462], "intensity_total": 394.5215374871099, "active_months": 2, "first_month": "2026-04", "last_active_month": "2026-05", "latest_month_value_ml": 73613.0, "latest_mom_pct": 4092.0842824601364, "worst_month": "2026-05", "worst_month_value_ml": 73613.0, "operators": [{"name": "Juan Ortiz-Fontanez", "qty": 75369.0, "count": 61, "share_pct": 100.0}], "top_operator": "Juan Ortiz-Fontanez", "top_operator_share_pct": 100.0, "spec_breakdown": {"GS07788-01": {"ml": 37554.0, "usd": 34.20539365918098, "count": 21}, "GS07786-01": {"ml": 12084.0, "usd": 12.706557463672393, "count": 19}, "GS07785-01": {"ml": 25731.0, "usd": 25.289120211360636, "count": 21}}, "rank": 14, "share_of_system_pct": 0.8233469285879024, "vs_mean_pct": -84.35640835682986, "vs_median_pct": -58.41182605240941, "z_score": -0.7825327706230131, "percentile": 31.57894736842105, "status": "正常"}, {"dept_id": 20022, "shop_no": "US00015", "store_name": "41st & Lexington", "area": "Area 1 (NYC)", "total_loss_ml": 74487.0, "total_loss_usd": 68.72702774108323, "total_sales": 139753, "record_count": 22, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 181.0, 74306.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.19032496697490092, 68.53670277410833], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 6397, 133356], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 28.294513052993594, 557.200275953088], "intensity_total": 532.9903472555151, "active_months": 2, "first_month": "2026-04", "last_active_month": "2026-05", "latest_month_value_ml": 74306.0, "latest_mom_pct": 40953.03867403315, "worst_month": "2026-05", "worst_month_value_ml": 74306.0, "operators": [{"name": "Afsana Gu", "qty": 74487.0, "count": 22, "share_pct": 100.0}], "top_operator": "Afsana Gu", "top_operator_share_pct": 100.0, "spec_breakdown": {"GS07788-01": {"ml": 66064.0, "usd": 60.173220607661825, "count": 8}, "GS07786-01": {"ml": 4010.0, "usd": 4.21659180977543, "count": 9}, "GS07785-01": {"ml": 4413.0, "usd": 4.337215323645971, "count": 5}}, "rank": 15, "share_of_system_pct": 0.8137117736699052, "vs_mean_pct": -84.5394763002718, "vs_median_pct": -58.89850850038901, "z_score": -0.7842310015906937, "percentile": 26.31578947368421, "status": "正常"}, {"dept_id": 20026, "shop_no": "US00019", "store_name": "29th & 3rd", "area": "Area 1 (NYC)", "total_loss_ml": 61686.0, "total_loss_usd": 59.2701003963012, "total_sales": 190638, "record_count": 75, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 59632.0, 2054.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 57.302474900924715, 1.967625495376486], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 89884, 100754], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 663.4328690311958, 20.386287393056353], "intensity_total": 323.5766216598999, "active_months": 2, "first_month": "2026-04", "last_active_month": "2026-05", "latest_month_value_ml": 2054.0, "latest_mom_pct": -96.5555406493158, "worst_month": "2026-04", "worst_month_value_ml": 59632.0, "operators": [{"name": "Juan Ortiz-Fontanez", "qty": 50710.0, "count": 44, "share_pct": 82.20665953376779}, {"name": "Darwin Coronel", "qty": 10976.0, "count": 31, "share_pct": 17.79334046623221}], "top_operator": "Juan Ortiz-Fontanez", "top_operator_share_pct": 82.20665953376779, "spec_breakdown": {"GS07788-01": {"ml": 32956.0, "usd": 30.01738705416116, "count": 27}, "GS07786-01": {"ml": 14792.0, "usd": 15.554071334214004, "count": 29}, "GS07785-01": {"ml": 13938.0, "usd": 13.698642007926026, "count": 19}}, "rank": 16, "share_of_system_pct": 0.673870936815844, "vs_mean_pct": -87.19645220049897, "vs_median_pct": -65.96202552599777, "z_score": -0.8088784558052969, "percentile": 21.052631578947366, "status": "正常"}, {"dept_id": 20016, "shop_no": "US00010", "store_name": "154 Bleecker", "area": "Area 1 (NYC)", "total_loss_ml": 44375.0, "total_loss_usd": 44.03347490092469, "total_sales": 63494, "record_count": 66, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8854.0, 35521.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.948730515191546, 35.084744385733146], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 5624, 57870], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1574.3243243243244, 613.8068083635735], "intensity_total": 698.8849340095127, "active_months": 2, "first_month": "2026-04", "last_active_month": "2026-05", "latest_month_value_ml": 35521.0, "latest_mom_pct": 301.1859046758527, "worst_month": "2026-05", "worst_month_value_ml": 35521.0, "operators": [{"name": "Juliana Li", "qty": 44375.0, "count": 66, "share_pct": 100.0}], "top_operator": "Juliana Li", "top_operator_share_pct": 100.0, "spec_breakdown": {"GS07788-01": {"ml": 14499.0, "usd": 13.206156538969616, "count": 24}, "GS07786-01": {"ml": 21318.0, "usd": 22.41628533685601, "count": 22}, "GS07785-01": {"ml": 8558.0, "usd": 8.411033025099075, "count": 20}}, "rank": 17, "share_of_system_pct": 0.48476190417928017, "vs_mean_pct": -90.78952382059367, "vs_median_pct": -75.51413420737528, "z_score": -0.8422096080519179, "percentile": 15.789473684210526, "status": "正常"}, {"dept_id": 20029, "shop_no": "US00022", "store_name": "23rd & 8th", "area": "Area 1 (NYC)", "total_loss_ml": 8743.0, "total_loss_usd": 8.577952443857333, "total_sales": 4771, "record_count": 7, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8743.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.577952443857333], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4771], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1832.5298679522114], "intensity_total": 1832.5298679522114, "active_months": 1, "first_month": "2026-05", "last_active_month": "2026-05", "latest_month_value_ml": 8743.0, "latest_mom_pct": null, "worst_month": "2026-05", "worst_month_value_ml": 8743.0, "operators": [{"name": "Huichen Jiang", "qty": 8743.0, "count": 7, "share_pct": 100.0}], "top_operator": "Huichen Jiang", "top_operator_share_pct": 100.0, "spec_breakdown": {"GS07788-01": {"ml": 1996.0, "usd": 1.818021136063408, "count": 3}, "GS07786-01": {"ml": 1875.0, "usd": 1.9715984147952443, "count": 2}, "GS07785-01": {"ml": 4872.0, "usd": 4.78833289299868, "count": 2}}, "rank": 18, "share_of_system_pct": 0.09551038486173402, "vs_mean_pct": -98.18530268762706, "vs_median_pct": -95.17566367042438, "z_score": -0.9108165988006675, "percentile": 10.526315789473683, "status": "正常"}, {"dept_id": 20025, "shop_no": "US00018", "store_name": "40th & 10th", "area": "Area 1 (NYC)", "total_loss_ml": 1870.0, "total_loss_usd": 1.8039431968295905, "total_sales": 7671, "record_count": 3, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1870.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.8039431968295905], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7671], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 243.775257463173], "intensity_total": 243.775257463173, "active_months": 1, "first_month": "2026-05", "last_active_month": "2026-05", "latest_month_value_ml": 1870.0, "latest_mom_pct": null, "worst_month": "2026-05", "worst_month_value_ml": 1870.0, "operators": [{"name": "Jian Ming Juo", "qty": 1870.0, "count": 3, "share_pct": 100.0}], "top_operator": "Jian Ming Juo", "top_operator_share_pct": 100.0, "spec_breakdown": {"GS07788-01": {"ml": 710.0, "usd": 0.6466908850726552, "count": 1}, "GS07786-01": {"ml": 250.0, "usd": 0.26287978863936595, "count": 1}, "GS07785-01": {"ml": 910.0, "usd": 0.8943725231175694, "count": 1}}, "rank": 19, "share_of_system_pct": 0.02042827630006206, "vs_mean_pct": -99.61186275029881, "vs_median_pct": -98.96814492321784, "z_score": -0.9240500924977979, "percentile": 5.263157894736842, "status": "正常"}], "stores_by_spec": {"GS07788-01": [{"dept_id": 1127, "shop_no": "US00001", "store_name": "8th & Broadway", "area": "Area 1 (NYC)", "total_loss_ml": 676910.2999999999, "total_loss_usd": 616.5517197490092, "total_sales": 3923950, "record_count": 258, "monthly_ml": [61226.0, 95133.5, 77990.0, 134300.0, 59555.0, 77297.20000000001, 63013.0, 39504.0, 44065.7, 14577.4, 10248.5], "monthly_usd": [55.766614266842794, 86.65065819022455, 71.03580581241744, 122.32476882430647, 54.24461360634082, 70.40478124174373, 57.394271466314386, 35.98151651254954, 40.136459907529705, 13.277565785997359, 9.334664134742404], "sales_monthly": [389091, 398356, 467770, 467086, 385513, 298141, 246171, 305852, 355478, 423711, 186781], "intensity_monthly": [157.35650529053615, 238.81528080410487, 166.72723774504564, 287.52735042369073, 154.48246881428125, 259.2639053333826, 255.972474418189, 129.16050900435505, 123.96182042207955, 34.40411034879906, 54.86907126527859], "intensity_total": 172.5073713987181, "active_months": 11, "first_month": "2025-07", "last_active_month": "2026-05", "latest_month_value_ml": 10248.5, "latest_mom_pct": -29.69596773087107, "worst_month": "2025-10", "worst_month_value_ml": 134300.0, "operators": [{"name": "Jian Ming Juo", "qty": 379427.30000000005, "count": 157, "share_pct": 56.05281822421673}, {"name": "Conan Yim", "qty": 173509.5, "count": 59, "share_pct": 25.632569042013397}, {"name": "Huanchun Xu", "qty": 111980.0, "count": 22, "share_pct": 16.542812245581135}, {"name": "Huichen Jiang", "qty": 11993.5, "count": 20, "share_pct": 1.7718004881887603}], "top_operator": "Jian Ming Juo", "top_operator_share_pct": 56.05281822421673, "rank": 1, "share_of_system_pct": 17.131434648886348, "vs_mean_pct": 225.49725832884064, "vs_median_pct": 924.6280879147494, "z_score": 2.1097992806185113, "percentile": 100.0, "status": "异常"}, {"dept_id": 20010, "shop_no": "US00006", "store_name": "102 Fulton", "area": "Area 1 (NYC)", "total_loss_ml": 616738.1000000001, "total_loss_usd": 561.7449404887715, "total_sales": 2119099, "record_count": 221, "monthly_ml": [0.0, 16620.0, 175037.7, 134673.2, 127915.5, 83263.3, 25170.4, 20113.0, 21079.0, 12866.0, 0.0], "monthly_usd": [0.0, 15.138031704095113, 159.4299790620872, 122.66469141347423, 116.5095604359313, 75.83889742404229, 22.926011624834874, 18.319568692206076, 19.199432628797894, 11.71876750330251, 0.0], "sales_monthly": [0, 40505, 285829, 302193, 251807, 216570, 197533, 177969, 227248, 246615, 172830], "intensity_monthly": [0.0, 410.319713615603, 612.3860769900886, 445.65294364859545, 507.9902464983103, 384.4636837973865, 127.42377223046277, 113.01406424714416, 92.75769203689362, 52.17038704052876, 0.0], "intensity_total": 291.0378892161244, "active_months": 9, "first_month": "2025-08", "last_active_month": "2026-04", "latest_month_value_ml": 12866.0, "latest_mom_pct": -38.96294890649462, "worst_month": "2025-09", "worst_month_value_ml": 175037.7, "operators": [{"name": "Ya Xin Chen", "qty": 566301.1, "count": 164, "share_pct": 91.82197435183588}, {"name": "Shangxian Piao", "qty": 50437.0, "count": 57, "share_pct": 8.178025648164105}], "top_operator": "Ya Xin Chen", "top_operator_share_pct": 91.82197435183588, "rank": 2, "share_of_system_pct": 15.608579830486164, "vs_mean_pct": 196.56301677923707, "vs_median_pct": 833.5464095422623, "z_score": 1.839084494731519, "percentile": 94.73684210526315, "status": "正常"}, {"dept_id": 1141, "shop_no": "US00005", "store_name": "54th & 8th", "area": "Area 1 (NYC)", "total_loss_ml": 514080.5, "total_loss_usd": 468.2410894980185, "total_sales": 1871521, "record_count": 223, "monthly_ml": [0.0, 15517.0, 101783.0, 209848.0, 33978.0, 46728.5, 42056.0, 22977.0, 22731.0, 10587.0, 7875.0], "monthly_usd": [0.0, 14.133383751651253, 92.70723712021136, 191.13632232496695, 30.948257595772784, 42.56182397622192, 38.30596036988112, 20.928192206076623, 20.704127476882427, 9.642980845442537, 7.172803830911492], "sales_monthly": [0, 66133, 236475, 257454, 228092, 176817, 180002, 154711, 203892, 214830, 153115], "intensity_monthly": [0.0, 234.633239078826, 430.4175917115974, 815.0892975055738, 148.96620661838205, 264.27605942867484, 233.6418484239064, 148.5156194452883, 111.48549231946323, 49.280826700181535, 51.43193024850602], "intensity_total": 274.6859372670678, "active_months": 10, "first_month": "2025-08", "last_active_month": "2026-05", "latest_month_value_ml": 7875.0, "latest_mom_pct": -25.61632190422216, "worst_month": "2025-10", "worst_month_value_ml": 209848.0, "operators": [{"name": "Yaqing Zuo", "qty": 264421.0, "count": 51, "share_pct": 51.435718724985676}, {"name": "Juan Ortiz-Fontanez", "qty": 134249.5, "count": 90, "share_pct": 26.114489851297606}, {"name": "Huanchun Xu", "qty": 81517.0, "count": 24, "share_pct": 15.856855103432244}, {"name": "Eric Park", "qty": 33893.0, "count": 58, "share_pct": 6.592936320284469}], "top_operator": "Yaqing Zuo", "top_operator_share_pct": 51.435718724985676, "rank": 3, "share_of_system_pct": 13.010492660573817, "vs_mean_pct": 147.1993605509025, "vs_median_pct": 678.1552736740131, "z_score": 1.3772278532314148, "percentile": 89.47368421052632, "status": "正常"}, {"dept_id": 1128, "shop_no": "US00002", "store_name": "28th & 6th", "area": "Area 1 (NYC)", "total_loss_ml": 490280.4, "total_loss_usd": 446.56319128137375, "total_sales": 2478154, "record_count": 214, "monthly_ml": [44392.0, 88480.40000000001, 137522.2, 90734.0, 30424.3, 37293.0, 32398.0, 5367.0, 3377.8, 4827.0, 15464.7], "monthly_usd": [40.43366446499339, 80.59080026420078, 125.25965244385732, 82.64345178335533, 27.711433091149274, 33.96766644649934, 29.509142668428, 4.888436591809775, 3.0766091149273445, 4.396587186261558, 14.085747225891673], "sales_monthly": [364922, 365091, 273165, 266065, 237707, 167698, 149761, 141557, 188600, 190441, 133147], "intensity_monthly": [121.64791380075742, 242.35163288056953, 503.4400453938096, 341.0219307312123, 127.99076173608687, 222.3819007978628, 216.33135462503589, 37.91405582203635, 17.90986214209968, 25.3464327534512, 116.14756622379777], "intensity_total": 197.8409735633863, "active_months": 11, "first_month": "2025-07", "last_active_month": "2026-05", "latest_month_value_ml": 15464.7, "latest_mom_pct": 220.37911746426352, "worst_month": "2025-09", "worst_month_value_ml": 137522.2, "operators": [{"name": "Lin Weng", "qty": 314934.60000000003, "count": 83, "share_pct": 64.2356088475085}, {"name": "Afsana Gu", "qty": 157796.09999999998, "count": 109, "share_pct": 32.18486808773102}, {"name": "Jian Ming Juo", "qty": 13975.0, "count": 16, "share_pct": 2.8504096839278095}, {"name": "Brionna Jiles", "qty": 3574.7, "count": 6, "share_pct": 0.7291133808326826}], "top_operator": "Lin Weng", "top_operator_share_pct": 64.2356088475085, "rank": 4, "share_of_system_pct": 12.408153092411004, "vs_mean_pct": 135.75490875580905, "vs_median_pct": 642.12945023008, "z_score": 1.2701511803560834, "percentile": 84.21052631578947, "status": "需关注"}, {"dept_id": 1140, "shop_no": "US00003", "store_name": "100 Maiden Ln", "area": "Area 1 (NYC)", "total_loss_ml": 428400.9, "total_loss_usd": 390.2013481505944, "total_sales": 1292740, "record_count": 255, "monthly_ml": [0.0, 0.0, 94058.0, 134052.0, 30521.999999999996, 59234.899999999994, 40491.3, 16497.8, 28562.7, 12978.3, 12003.900000000001], "monthly_usd": [0.0, 0.0, 85.6710581241744, 122.09888243064734, 27.800421400264195, 53.953056208718614, 36.880781175693535, 15.026728005284014, 26.015827807133423, 11.821053963011884, 10.933539035667104], "sales_monthly": [0, 0, 150712, 200465, 153920, 127541, 131879, 114029, 145956, 155563, 112675], "intensity_monthly": [0.0, 0.0, 624.0909814746005, 668.7052602698725, 198.297817047817, 464.4381022573133, 307.03372030421826, 144.68073911022634, 195.69390775302145, 83.42793594877959, 106.53561127135568], "intensity_total": 331.389838637313, "active_months": 9, "first_month": "2025-09", "last_active_month": "2026-05", "latest_month_value_ml": 12003.900000000001, "latest_mom_pct": -7.507917061556582, "worst_month": "2025-10", "worst_month_value_ml": 134052.0, "operators": [{"name": "Jay Gregory", "qty": 242001.09999999998, "count": 64, "share_pct": 56.48940046577866}, {"name": "Dominique Meadows", "qty": 186399.80000000002, "count": 191, "share_pct": 43.510599534221335}], "top_operator": "Jay Gregory", "top_operator_share_pct": 56.48940046577866, "rank": 5, "share_of_system_pct": 10.842089449479639, "vs_mean_pct": 105.99969954011314, "vs_median_pct": 548.4634596754662, "z_score": 0.9917552501209553, "percentile": 78.94736842105263, "status": "正常"}, {"dept_id": 20011, "shop_no": "US00004", "store_name": "37th & Broadway", "area": "Area 1 (NYC)", "total_loss_ml": 334093.0, "total_loss_usd": 304.3026730515191, "total_sales": 1537938, "record_count": 162, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 139762.0, 53069.0, 49565.0, 25160.0, 31224.0, 24893.0, 10420.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 127.29973447820342, 48.33695574636723, 45.145399603698806, 22.91653896961691, 28.439825627476882, 22.67334676354029, 9.490871862615588], "sales_monthly": [0, 0, 0, 0, 68260, 210119, 195218, 211966, 295481, 327364, 229530], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 2047.4948725461472, 252.56640284790998, 253.89564486881332, 118.6982817999113, 105.67176908159915, 76.04073752764506, 45.39711584542325], "intensity_total": 217.2343748577641, "active_months": 7, "first_month": "2025-11", "last_active_month": "2026-05", "latest_month_value_ml": 10420.0, "latest_mom_pct": -58.140842807214874, "worst_month": "2025-11", "worst_month_value_ml": 139762.0, "operators": [{"name": "Tunisia Hayward", "qty": 194331.0, "count": 147, "share_pct": 58.16673800408868}, {"name": "Yaqing Zuo", "qty": 139762.0, "count": 15, "share_pct": 41.83326199591132}], "top_operator": "Tunisia Hayward", "top_operator_share_pct": 58.16673800408868, "rank": 6, "share_of_system_pct": 8.455318815728447, "vs_mean_pct": 60.65105749884049, "vs_median_pct": 405.7111286025672, "z_score": 0.5674639169812008, "percentile": 73.68421052631578, "status": "正常"}, {"dept_id": 20032, "shop_no": "US00025", "store_name": "221 Grand", "area": "Area 1 (NYC)", "total_loss_ml": 244448.0, "total_loss_usd": 222.6511175693527, "total_sales": 1204965, "record_count": 110, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 62249.899999999994, 50165.100000000006, 43060.0, 36839.0, 19327.0, 32807.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 56.699215389696164, 45.69199002642007, 39.2204359313078, 33.55414861294584, 17.60365455746367, 29.88167305151915], "sales_monthly": [0, 0, 0, 0, 0, 152358, 269076, 208262, 273980, 110595, 190694], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 408.57651058690715, 186.4346875975561, 206.75879421113788, 134.4587196145704, 174.75473574754736, 172.04002223457476], "intensity_total": 202.867303199678, "active_months": 6, "first_month": "2025-12", "last_active_month": "2026-05", "latest_month_value_ml": 32807.0, "latest_mom_pct": 69.74698608164744, "worst_month": "2025-12", "worst_month_value_ml": 62249.899999999994, "operators": [{"name": "Juliana Li", "qty": 172640.0, "count": 83, "share_pct": 70.62442728105773}, {"name": "Kayen Wu He", "qty": 71808.0, "count": 27, "share_pct": 29.375572718942273}], "top_operator": "Juliana Li", "top_operator_share_pct": 70.62442728105773, "rank": 7, "share_of_system_pct": 6.186558155565029, "vs_mean_pct": 17.544604955735558, "vs_median_pct": 270.0169532574473, "z_score": 0.1641509754427583, "percentile": 68.42105263157895, "status": "需关注"}, {"dept_id": 20008, "shop_no": "US00008", "store_name": "33rd & 10th", "area": "Area 1 (NYC)", "total_loss_ml": 151446.0, "total_loss_usd": 137.94189828269486, "total_sales": 991366, "record_count": 110, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 30494.0, 59285.0, 13327.0, 19573.0, 17959.0, 10808.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 27.774918097754295, 53.99868890356671, 12.138661162483487, 17.82771928665786, 16.357636063408187, 9.844274768824304], "sales_monthly": [0, 0, 0, 0, 0, 142844, 155770, 141938, 181210, 214552, 155052], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 213.47763994287476, 380.5931822558901, 93.89310825853542, 108.01280282545113, 83.70464968865357, 69.70564713773443], "intensity_total": 152.76497277493883, "active_months": 6, "first_month": "2025-12", "last_active_month": "2026-05", "latest_month_value_ml": 10808.0, "latest_mom_pct": -39.818475416225844, "worst_month": "2026-01", "worst_month_value_ml": 59285.0, "operators": [{"name": "Yaqing Zuo", "qty": 151446.0, "count": 110, "share_pct": 100.0}], "top_operator": "Yaqing Zuo", "top_operator_share_pct": 100.0, "rank": 8, "share_of_system_pct": 3.8328376032027323, "vs_mean_pct": -27.176085539148094, "vs_median_pct": 129.24134172923226, "z_score": -0.25426511233635074, "percentile": 63.1578947368421, "status": "正常"}, {"dept_id": 20031, "shop_no": "US00024", "store_name": "15th & 3rd", "area": "Area 1 (NYC)", "total_loss_ml": 149212.0, "total_loss_usd": 135.9070990752972, "total_sales": 676337, "record_count": 137, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 58346.0, 28928.0, 17075.0, 15694.0, 15676.0, 13493.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 53.1434174372523, 26.34855482166446, 15.552460369881109, 14.294601056803169, 14.278206076618229, 12.289859313077937], "sales_monthly": [0, 0, 0, 0, 0, 55066, 123712, 107067, 136004, 151164, 103324], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 1059.5648857734354, 233.8334195550957, 159.47957820803796, 115.39366489220905, 103.70193961525231, 130.58921450969765], "intensity_total": 220.61782809457415, "active_months": 6, "first_month": "2025-12", "last_active_month": "2026-05", "latest_month_value_ml": 13493.0, "latest_mom_pct": -13.925746363868333, "worst_month": "2025-12", "worst_month_value_ml": 58346.0, "operators": [{"name": "Clara Mae Venturina", "qty": 149212.0, "count": 137, "share_pct": 100.0}], "top_operator": "Clara Mae Venturina", "top_operator_share_pct": 100.0, "rank": 9, "share_of_system_pct": 3.776298908185664, "vs_mean_pct": -28.250320744472386, "vs_median_pct": 125.85977234197144, "z_score": -0.2643158804929337, "percentile": 57.89473684210527, "status": "正常"}, {"dept_id": 20022, "shop_no": "US00015", "store_name": "41st & Lexington", "area": "Area 1 (NYC)", "total_loss_ml": 66064.0, "total_loss_usd": 60.173220607661825, "total_sales": 139753, "record_count": 8, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 66064.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 60.173220607661825], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 6397, 133356], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 495.39578271693813], "intensity_total": 472.7197269468276, "active_months": 1, "first_month": "2026-05", "last_active_month": "2026-05", "latest_month_value_ml": 66064.0, "latest_mom_pct": null, "worst_month": "2026-05", "worst_month_value_ml": 66064.0, "operators": [{"name": "Afsana Gu", "qty": 66064.0, "count": 8, "share_pct": 100.0}], "top_operator": "Afsana Gu", "top_operator_share_pct": 100.0, "rank": 10, "share_of_system_pct": 1.671966135903129, "vs_mean_pct": -68.23264341784055, "vs_median_pct": 0.0, "z_score": -0.6383988127595233, "percentile": 52.63157894736842, "status": "正常"}, {"dept_id": 20035, "shop_no": "US00027", "store_name": "52nd & Madison", "area": "Area 1 (NYC)", "total_loss_ml": 63496.0, "total_loss_usd": 57.8342034346103, "total_sales": 656915, "record_count": 84, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1927.0, 24846.0, 19357.0, 17366.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.7551737120211361, 22.630537648612943, 17.630979524438576, 15.817512549537648], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 16072, 214714, 256440, 169689], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 119.89795918367346, 115.7167208472666, 75.48354390890655, 102.34016347553465], "intensity_total": 96.65786288941491, "active_months": 4, "first_month": "2026-02", "last_active_month": "2026-05", "latest_month_value_ml": 17366.0, "latest_mom_pct": -10.28568476520122, "worst_month": "2026-03", "worst_month_value_ml": 24846.0, "operators": [{"name": "Wenny Lin", "qty": 63496.0, "count": 84, "share_pct": 100.0}], "top_operator": "Wenny Lin", "top_operator_share_pct": 100.0, "rank": 11, "share_of_system_pct": 1.6069744757402682, "vs_mean_pct": -69.4674849609349, "vs_median_pct": -3.8871397432792443, "z_score": -0.6499522472385318, "percentile": 47.368421052631575, "status": "正常"}, {"dept_id": 20027, "shop_no": "US00020", "store_name": "21st & 3rd", "area": "Area 1 (NYC)", "total_loss_ml": 54595.0, "total_loss_usd": 49.72688573315719, "total_sales": 488982, "record_count": 89, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 17172.0, 20935.0, 7116.0, 9372.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 15.64081109643329, 19.068272787318357, 6.481482166446498, 8.53631968295905], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 110889, 140982, 136550, 100561], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 154.85756026296568, 148.49413400292235, 52.1127792017576, 93.19716391046231], "intensity_total": 111.65032659688904, "active_months": 4, "first_month": "2026-02", "last_active_month": "2026-05", "latest_month_value_ml": 9372.0, "latest_mom_pct": 31.703204047217536, "worst_month": "2026-03", "worst_month_value_ml": 20935.0, "operators": [{"name": "Darwin Coronel", "qty": 45223.0, "count": 71, "share_pct": 82.8335928198553}, {"name": "Javier Cruz", "qty": 9372.0, "count": 18, "share_pct": 17.166407180144702}], "top_operator": "Darwin Coronel", "top_operator_share_pct": 82.8335928198553, "rank": 12, "share_of_system_pct": 1.3817054854327824, "vs_mean_pct": -73.74759577677713, "vs_median_pct": -17.36043836279971, "z_score": -0.6899978548310766, "percentile": 42.10526315789473, "status": "正常"}, {"dept_id": 20008, "shop_no": "JFK-KIOSK", "store_name": "JFK 24", "area": "Area 1 (NYC)", "total_loss_ml": 48407.0, "total_loss_usd": 44.09065587846763, "total_sales": 991366, "record_count": 37, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 37206.0, 3266.0, 4351.0, 325.0, 1916.0, 1343.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 33.88842404227212, 2.974778071334214, 3.963031043593131, 0.29602047556142663, 1.7451545574636722, 1.2232476882430647], "sales_monthly": [0, 0, 0, 0, 0, 142844, 155770, 141938, 181210, 214552, 155052], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 260.4659628685839, 20.966810040444244, 30.65422931138948, 1.7934992550080018, 8.930236026697491, 8.66161029848051], "intensity_total": 48.82858601162436, "active_months": 6, "first_month": "2025-12", "last_active_month": "2026-05", "latest_month_value_ml": 1343.0, "latest_mom_pct": -29.906054279749476, "worst_month": "2025-12", "worst_month_value_ml": 37206.0, "operators": [{"name": "Yaqing Zuo", "qty": 48407.0, "count": 37, "share_pct": 100.0}], "top_operator": "Yaqing Zuo", "top_operator_share_pct": 100.0, "rank": 13, "share_of_system_pct": 1.225097855725702, "vs_mean_pct": -76.72314074121167, "vs_median_pct": -26.727113102446115, "z_score": -0.7178376728046376, "percentile": 36.84210526315789, "status": "正常"}, {"dept_id": 20009, "shop_no": "US00007", "store_name": "108th & Broadway", "area": "Area 1 (NYC)", "total_loss_ml": 37554.0, "total_loss_usd": 34.20539365918098, "total_sales": 191039, "record_count": 21, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 954.0, 36600.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.8689339498018493, 33.33645970937913], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 7395, 183644], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 129.00608519269775, 199.2986430267256], "intensity_total": 196.57766215275416, "active_months": 2, "first_month": "2026-04", "last_active_month": "2026-05", "latest_month_value_ml": 36600.0, "latest_mom_pct": 3736.4779874213837, "worst_month": "2026-05", "worst_month_value_ml": 36600.0, "operators": [{"name": "Juan Ortiz-Fontanez", "qty": 37554.0, "count": 21, "share_pct": 100.0}], "top_operator": "Juan Ortiz-Fontanez", "top_operator_share_pct": 100.0, "rank": 14, "share_of_system_pct": 0.9504271050452003, "vs_mean_pct": -81.94188500414118, "vs_median_pct": -43.15512230564301, "z_score": -0.7666653302815378, "percentile": 31.57894736842105, "status": "正常"}, {"dept_id": 20026, "shop_no": "US00019", "store_name": "29th & 3rd", "area": "Area 1 (NYC)", "total_loss_ml": 32956.0, "total_loss_usd": 30.017387054161162, "total_sales": 190638, "record_count": 27, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 31689.0, 1267.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 28.863362615587846, 1.1540244385733156], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 89884, 100754], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 352.5544034533399, 12.575183119280624], "intensity_total": 172.87214511272674, "active_months": 2, "first_month": "2026-04", "last_active_month": "2026-05", "latest_month_value_ml": 1267.0, "latest_mom_pct": -96.00176717472941, "worst_month": "2026-04", "worst_month_value_ml": 31689.0, "operators": [{"name": "Juan Ortiz-Fontanez", "qty": 27876.0, "count": 14, "share_pct": 84.58550794999394}, {"name": "Darwin Coronel", "qty": 5080.0, "count": 13, "share_pct": 15.414492050006068}], "top_operator": "Juan Ortiz-Fontanez", "top_operator_share_pct": 84.58550794999394, "rank": 15, "share_of_system_pct": 0.8340596387567135, "vs_mean_pct": -84.15286686362245, "vs_median_pct": -50.1150399612497, "z_score": -0.7873517367201988, "percentile": 26.31578947368421, "status": "正常"}, {"dept_id": 20019, "shop_no": "US00012", "store_name": "16th & 6th", "area": "Area 1 (NYC)", "total_loss_ml": 25390.0, "total_loss_usd": 23.12603038309115, "total_sales": 204282, "record_count": 53, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 6874.0, 14345.0, 4171.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 6.261060766182299, 13.065888375165125, 3.799081241743725], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 23824, 104767, 75691], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 288.5325721961048, 136.92288602327068, 55.10562682485369], "intensity_total": 124.28897308622395, "active_months": 3, "first_month": "2026-03", "last_active_month": "2026-05", "latest_month_value_ml": 4171.0, "latest_mom_pct": -70.92366678285117, "worst_month": "2026-04", "worst_month_value_ml": 14345.0, "operators": [{"name": "Juliana Li", "qty": 18620.0, "count": 31, "share_pct": 73.33595903899173}, {"name": "Joselyn Pacheco Trejo", "qty": 6770.0, "count": 22, "share_pct": 26.664040961008272}], "top_operator": "Juliana Li", "top_operator_share_pct": 73.33595903899173, "rank": 16, "share_of_system_pct": 0.6425772007535185, "vs_mean_pct": -87.79103318568315, "vs_median_pct": -61.56757084039719, "z_score": -0.8213911780240066, "percentile": 21.052631578947366, "status": "正常"}, {"dept_id": 20016, "shop_no": "US00010", "store_name": "154 Bleecker", "area": "Area 1 (NYC)", "total_loss_ml": 14499.0, "total_loss_usd": 13.206156538969616, "total_sales": 63494, "record_count": 24, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2318.0, 12181.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.1113091149273444, 11.094847424042271], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 5624, 57870], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 412.1621621621622, 210.48902712977363], "intensity_total": 228.3522852552997, "active_months": 2, "first_month": "2026-04", "last_active_month": "2026-05", "latest_month_value_ml": 12181.0, "latest_mom_pct": 425.49611734253665, "worst_month": "2026-05", "worst_month_value_ml": 12181.0, "operators": [{"name": "Juliana Li", "qty": 14499.0, "count": 24, "share_pct": 100.0}], "top_operator": "Juliana Li", "top_operator_share_pct": 100.0, "rank": 17, "share_of_system_pct": 0.3669447354755914, "vs_mean_pct": -93.02805002596376, "vs_median_pct": -78.05310002421894, "z_score": -0.8703897975375899, "percentile": 15.789473684210526, "status": "正常"}, {"dept_id": 20029, "shop_no": "US00022", "store_name": "23rd & 8th", "area": "Area 1 (NYC)", "total_loss_ml": 1996.0, "total_loss_usd": 1.818021136063408, "total_sales": 4771, "record_count": 3, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1996.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.818021136063408], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4771], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 418.36093062251103], "intensity_total": 418.36093062251103, "active_months": 1, "first_month": "2026-05", "last_active_month": "2026-05", "latest_month_value_ml": 1996.0, "latest_mom_pct": null, "worst_month": "2026-05", "worst_month_value_ml": 1996.0, "operators": [{"name": "Huichen Jiang", "qty": 1996.0, "count": 3, "share_pct": 100.0}], "top_operator": "Huichen Jiang", "top_operator_share_pct": 100.0, "rank": 18, "share_of_system_pct": 0.050515324643718905, "vs_mean_pct": -99.04020883176933, "vs_median_pct": -96.97868733349479, "z_score": -0.9266408066073111, "percentile": 10.526315789473683, "status": "正常"}, {"dept_id": 20025, "shop_no": "US00018", "store_name": "40th & 10th", "area": "Area 1 (NYC)", "total_loss_ml": 710.0, "total_loss_usd": 0.6466908850726552, "total_sales": 7671, "record_count": 1, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 710.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.6466908850726552], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7671], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 92.55638117585713], "intensity_total": 92.55638117585713, "active_months": 1, "first_month": "2026-05", "last_active_month": "2026-05", "latest_month_value_ml": 710.0, "latest_mom_pct": null, "worst_month": "2026-05", "worst_month_value_ml": 710.0, "operators": [{"name": "Jian Ming Juo", "qty": 710.0, "count": 1, "share_pct": 100.0}], "top_operator": "Jian Ming Juo", "top_operator_share_pct": 100.0, "rank": 19, "share_of_system_pct": 0.01796887800452927, "vs_mean_pct": -99.65859131791395, "vs_median_pct": -98.92528457253572, "z_score": -0.932426521848746, "percentile": 5.263157894736842, "status": "正常"}], "GS07786-01": [{"dept_id": 1127, "shop_no": "US00001", "store_name": "8th & Broadway", "area": "Area 1 (NYC)", "total_loss_ml": 497285.1, "total_loss_usd": 522.9048079260239, "total_sales": 3923950, "record_count": 238, "monthly_ml": [119859.0, 68429.5, 52705.5, 20240.0, 23125.0, 97281.6, 30438.0, 37308.0, 32512.3, 12315.2, 3071.0], "monthly_usd": [126.03403434610306, 71.95492998678996, 55.42084280052841, 21.282747688243067, 24.316380449141352, 102.29346578599736, 32.006140026420084, 39.23007661822985, 34.18730620871863, 12.949668692206078, 3.2292153236459704], "sales_monthly": [389091, 398356, 467770, 467086, 385513, 298141, 246171, 305852, 355478, 423711, 186781], "intensity_monthly": [308.0487598016917, 171.77976483346555, 112.67396370010903, 43.332491232877885, 59.985006990685136, 326.2939347489946, 123.64575843620898, 121.98056576383348, 91.46079363561176, 29.065093896547413, 16.44171516374792], "intensity_total": 126.73074325615768, "active_months": 11, "first_month": "2025-07", "last_active_month": "2026-05", "latest_month_value_ml": 3071.0, "latest_mom_pct": -75.06333636481747, "worst_month": "2025-07", "worst_month_value_ml": 119859.0, "operators": [{"name": "Jian Ming Juo", "qty": 236798.1, "count": 137, "share_pct": 47.61817717844352}, {"name": "Conan Yim", "qty": 210288.5, "count": 64, "share_pct": 42.287311644768764}, {"name": "Huanchun Xu", "qty": 42195.5, "count": 15, "share_pct": 8.485172791221776}, {"name": "Huichen Jiang", "qty": 8003.0, "count": 22, "share_pct": 1.609338385565946}], "top_operator": "Jian Ming Juo", "top_operator_share_pct": 47.61817717844352, "rank": 1, "share_of_system_pct": 18.573365891667603, "vs_mean_pct": 252.89395194168443, "vs_median_pct": 576.4679236043095, "z_score": 2.2896001089703497, "percentile": 100.0, "status": "异常"}, {"dept_id": 1141, "shop_no": "US00005", "store_name": "54th & 8th", "area": "Area 1 (NYC)", "total_loss_ml": 427425.10000000003, "total_loss_usd": 449.4456797886395, "total_sales": 1871521, "record_count": 257, "monthly_ml": [0.0, 7238.5, 51824.5, 193981.0, 30380.3, 47709.4, 13928.4, 19597.0, 48993.0, 6898.0, 6875.0], "monthly_usd": [0.0, 7.611421400264202, 54.49445442536326, 203.9747371202114, 31.945467371202117, 50.16734795244386, 14.645979392338178, 20.606620871862614, 51.51707793923383, 7.253379128137384, 7.2291941875825625], "sales_monthly": [0, 66133, 236475, 257454, 228092, 176817, 180002, 154711, 203892, 214830, 153115], "intensity_monthly": [0.0, 109.45367668183812, 219.1542446347394, 753.4588703224654, 133.1931852059695, 269.823602934107, 77.3791402317752, 126.66843340163273, 240.28897651697957, 32.109109528464366, 44.900891486790975], "intensity_total": 228.38381188348944, "active_months": 10, "first_month": "2025-08", "last_active_month": "2026-05", "latest_month_value_ml": 6875.0, "latest_mom_pct": -0.3334299797042621, "worst_month": "2025-10", "worst_month_value_ml": 193981.0, "operators": [{"name": "Yaqing Zuo", "qty": 230625.3, "count": 56, "share_pct": 53.95689209641642}, {"name": "Juan Ortiz-Fontanez", "qty": 113113.79999999999, "count": 124, "share_pct": 26.464005038543593}, {"name": "Eric Park", "qty": 45436.0, "count": 54, "share_pct": 10.630166548478318}, {"name": "Huanchun Xu", "qty": 38250.0, "count": 23, "share_pct": 8.94893631656166}], "top_operator": "Yaqing Zuo", "top_operator_share_pct": 53.95689209641642, "rank": 2, "share_of_system_pct": 15.964127567028685, "vs_mean_pct": 203.31842377354502, "vs_median_pct": 481.43582000217657, "z_score": 1.8407632197346242, "percentile": 94.73684210526315, "status": "正常"}, {"dept_id": 20032, "shop_no": "US00025", "store_name": "221 Grand", "area": "Area 1 (NYC)", "total_loss_ml": 346979.7, "total_loss_usd": 364.8558007926024, "total_sales": 1204965, "record_count": 113, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 22394.9, 34116.8, 99724.0, 49884.0, 140860.0, 0.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 23.548666314398943, 35.87446869220607, 104.86169616908852, 52.453981505944526, 148.11698811096434, 0.0], "sales_monthly": [0, 0, 0, 0, 0, 152358, 269076, 208262, 273980, 110595, 190694], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 146.98867141863244, 126.79243039141357, 478.8391545265099, 182.07168406453025, 1273.6561327365614, 0.0], "intensity_total": 287.9583224409008, "active_months": 5, "first_month": "2025-12", "last_active_month": "2026-04", "latest_month_value_ml": 140860.0, "latest_mom_pct": 182.37511025579346, "worst_month": "2026-04", "worst_month_value_ml": 140860.0, "operators": [{"name": "Juliana Li", "qty": 189368.7, "count": 90, "share_pct": 54.576305184424335}, {"name": "Kayen Wu He", "qty": 157611.0, "count": 23, "share_pct": 45.423694815575665}], "top_operator": "Juliana Li", "top_operator_share_pct": 54.576305184424335, "rank": 3, "share_of_system_pct": 12.959529503460004, "vs_mean_pct": 146.23106056574008, "vs_median_pct": 372.0041625857003, "z_score": 1.32391719784336, "percentile": 89.47368421052632, "status": "需关注"}, {"dept_id": 1128, "shop_no": "US00002", "store_name": "28th & 6th", "area": "Area 1 (NYC)", "total_loss_ml": 346033.8, "total_loss_usd": 363.8611688243065, "total_sales": 2478154, "record_count": 263, "monthly_ml": [104318.1, 62330.2, 56636.9, 25325.0, 29612.600000000002, 14362.7, 11258.3, 6159.0, 25095.100000000002, 4222.0, 6713.9], "monthly_usd": [109.69248031704093, 65.54139920739762, 59.55478520475562, 26.629722589167773, 31.13821611624835, 15.102654161162482, 11.838318097754291, 6.476306472919418, 26.387978335535013, 4.439513870541611, 7.059794451783356], "sales_monthly": [364922, 365091, 273165, 266065, 237707, 167698, 149761, 141557, 188600, 190441, 133147], "intensity_monthly": [285.8641024657324, 170.72510689115865, 207.33585927919023, 95.18350778944995, 124.57605371318472, 85.64622118331764, 75.17511234567075, 43.50897518314177, 133.05991516436904, 22.169595832830115, 50.42471854416547], "intensity_total": 139.63369508109665, "active_months": 11, "first_month": "2025-07", "last_active_month": "2026-05", "latest_month_value_ml": 6713.9, "latest_mom_pct": 59.02179062055897, "worst_month": "2025-07", "worst_month_value_ml": 104318.1, "operators": [{"name": "Lin Weng", "qty": 232785.2, "count": 93, "share_pct": 67.27238784188134}, {"name": "Afsana Gu", "qty": 105299.7, "count": 152, "share_pct": 30.43046661915686}, {"name": "Brionna Jiles", "qty": 4346.9, "count": 5, "share_pct": 1.2562067636167333}, {"name": "Jian Ming Juo", "qty": 3602.0, "count": 13, "share_pct": 1.0409387753450674}], "top_operator": "Lin Weng", "top_operator_share_pct": 67.27238784188134, "rank": 4, "share_of_system_pct": 12.924200580882333, "vs_mean_pct": 145.55981103676433, "vs_median_pct": 370.7174338883447, "z_score": 1.3178399746322509, "percentile": 84.21052631578947, "status": "需关注"}, {"dept_id": 20010, "shop_no": "US00006", "store_name": "102 Fulton", "area": "Area 1 (NYC)", "total_loss_ml": 284543.8, "total_loss_usd": 299.203256010568, "total_sales": 2119099, "record_count": 244, "monthly_ml": [0.0, 9830.0, 48378.5, 22714.199999999997, 33970.2, 32220.399999999998, 34432.8, 21703.0, 67432.4, 13862.3, 0.0], "monthly_usd": [0.0, 10.336433289299869, 50.87091941875825, 23.884416380449142, 35.72031598414795, 33.8803677675033, 36.206748745046234, 22.821120211360633, 70.90646023778069, 14.576473976221926, 0.0], "sales_monthly": [0, 40505, 285829, 302193, 251807, 216570, 197533, 177969, 227248, 246615, 172830], "intensity_monthly": [0.0, 242.686088137267, 169.25679339745093, 75.1645471602585, 134.90570158891532, 148.77591540841297, 174.31416522808848, 121.94820446257494, 296.7348447511089, 56.21028728990531, 0.0], "intensity_total": 134.275840817253, "active_months": 9, "first_month": "2025-08", "last_active_month": "2026-04", "latest_month_value_ml": 13862.3, "latest_mom_pct": -79.44267147543317, "worst_month": "2026-03", "worst_month_value_ml": 67432.4, "operators": [{"name": "Ya Xin Chen", "qty": 183697.1, "count": 186, "share_pct": 64.55846164984091}, {"name": "Shangxian Piao", "qty": 100846.7, "count": 58, "share_pct": 35.4415383501591}], "top_operator": "Ya Xin Chen", "top_operator_share_pct": 64.55846164984091, "rank": 5, "share_of_system_pct": 10.62757784137407, "vs_mean_pct": 101.92397898610733, "vs_median_pct": 287.0712264664272, "z_score": 0.9227787046765566, "percentile": 78.94736842105263, "status": "正常"}, {"dept_id": 1140, "shop_no": "US00003", "store_name": "100 Maiden Ln", "area": "Area 1 (NYC)", "total_loss_ml": 178505.5, "total_loss_usd": 187.70195244385738, "total_sales": 1292740, "record_count": 236, "monthly_ml": [0.0, 0.0, 38798.0, 28171.3, 19544.8, 20609.600000000006, 10428.7, 9425.7, 17398.4, 22230.1, 11898.9], "monthly_usd": [0.0, 0.0, 40.79684015852048, 29.622661558784685, 20.55173157199472, 21.671389167767508, 10.965977807133422, 9.911304095112287, 18.29475085865258, 23.375375957727872, 12.511921268163809], "sales_monthly": [0, 0, 150712, 200465, 153920, 127541, 131879, 114029, 145956, 155563, 112675], "intensity_monthly": [0.0, 0.0, 257.4313923244334, 140.52976828872872, 126.98024948024947, 161.5919586642727, 79.0777910053913, 82.66055126327514, 119.20304749376525, 142.9009468832563, 105.60372753494563], "intensity_total": 138.08306387982117, "active_months": 9, "first_month": "2025-09", "last_active_month": "2026-05", "latest_month_value_ml": 11898.9, "latest_mom_pct": -46.47392499358977, "worst_month": "2025-09", "worst_month_value_ml": 38798.0, "operators": [{"name": "Dominique Meadows", "qty": 97387.19999999998, "count": 172, "share_pct": 54.55697443496138}, {"name": "Jay Gregory", "qty": 81118.3, "count": 64, "share_pct": 45.44302556503862}], "top_operator": "Dominique Meadows", "top_operator_share_pct": 54.55697443496138, "rank": 6, "share_of_system_pct": 6.667096933278459, "vs_mean_pct": 26.67484173229071, "vs_median_pct": 142.82498095549025, "z_score": 0.2415032865281928, "percentile": 73.68421052631578, "status": "正常"}, {"dept_id": 20011, "shop_no": "US00004", "store_name": "37th & Broadway", "area": "Area 1 (NYC)", "total_loss_ml": 156415.0, "total_loss_usd": 164.47336856010568, "total_sales": 1537938, "record_count": 175, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 20585.0, 29941.0, 32502.0, 24369.0, 19845.0, 17006.0, 12167.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 21.64552179656539, 31.48353500660502, 34.17647556142669, 25.624470277410836, 20.86739762219287, 17.88213474240423, 12.793833553500662], "sales_monthly": [0, 0, 0, 0, 68260, 210119, 195218, 211966, 295481, 327364, 229530], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 301.567535892177, 142.49544305845734, 166.4907949062074, 114.96655123934971, 67.1616787543023, 51.94828997690644, 53.00832135232867], "intensity_total": 101.70435999370586, "active_months": 7, "first_month": "2025-11", "last_active_month": "2026-05", "latest_month_value_ml": 12167.0, "latest_mom_pct": -28.454663060096436, "worst_month": "2026-01", "worst_month_value_ml": 32502.0, "operators": [{"name": "Tunisia Hayward", "qty": 134680.0, "count": 160, "share_pct": 86.10427388677556}, {"name": "Yaqing Zuo", "qty": 21735.0, "count": 15, "share_pct": 13.895726113224436}], "top_operator": "Tunisia Hayward", "top_operator_share_pct": 86.10427388677556, "rank": 7, "share_of_system_pct": 5.842027090586845, "vs_mean_pct": 10.998514721150059, "vs_median_pct": 112.77478506910437, "z_score": 0.09957612790148498, "percentile": 68.42105263157895, "status": "正常"}, {"dept_id": 20031, "shop_no": "US00024", "store_name": "15th & 3rd", "area": "Area 1 (NYC)", "total_loss_ml": 98820.7, "total_loss_usd": 103.91185891677675, "total_sales": 676337, "record_count": 142, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 17774.7, 21694.0, 23224.0, 15916.0, 15176.0, 5036.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 18.690437516512553, 22.811656538969626, 24.42048084544254, 16.73597886393659, 15.957854689564066, 5.295450462351387], "sales_monthly": [0, 0, 0, 0, 0, 55066, 123712, 107067, 136004, 151164, 103324], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 322.78901681618424, 175.3588980858769, 216.91090625496184, 117.02596982441693, 100.39427376888676, 48.73988618326817], "intensity_total": 146.11162778319093, "active_months": 6, "first_month": "2025-12", "last_active_month": "2026-05", "latest_month_value_ml": 5036.0, "latest_mom_pct": -66.81602530311017, "worst_month": "2026-02", "worst_month_value_ml": 23224.0, "operators": [{"name": "Clara Mae Venturina", "qty": 98820.7, "count": 142, "share_pct": 100.0}], "top_operator": "Clara Mae Venturina", "top_operator_share_pct": 100.0, "rank": 8, "share_of_system_pct": 3.6909069239571366, "vs_mean_pct": -29.87276844481441, "vs_median_pct": 34.42798454674067, "z_score": -0.27045602855012085, "percentile": 63.1578947368421, "status": "正常"}, {"dept_id": 20008, "shop_no": "US00008", "store_name": "33rd & 10th", "area": "Area 1 (NYC)", "total_loss_ml": 92593.0, "total_loss_usd": 97.36331307793924, "total_sales": 991366, "record_count": 125, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 12580.0, 25397.0, 8595.0, 22979.0, 14917.0, 8125.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 13.228110964332894, 26.70543196829591, 9.0378071334214, 24.16285865257596, 15.685511228533688, 8.543593130779392], "sales_monthly": [0, 0, 0, 0, 0, 142844, 155770, 141938, 181210, 214552, 155052], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 88.06810226540841, 163.04166399178277, 60.5546083501247, 126.808675017935, 69.52626869010777, 52.40177488842453], "intensity_total": 93.39941051034634, "active_months": 6, "first_month": "2025-12", "last_active_month": "2026-05", "latest_month_value_ml": 8125.0, "latest_mom_pct": -45.53194342025876, "worst_month": "2026-01", "worst_month_value_ml": 25397.0, "operators": [{"name": "Yaqing Zuo", "qty": 92593.0, "count": 125, "share_pct": 100.0}], "top_operator": "Yaqing Zuo", "top_operator_share_pct": 100.0, "rank": 9, "share_of_system_pct": 3.4583052418163716, "vs_mean_pct": -34.29220040548894, "vs_median_pct": 25.956306453368157, "z_score": -0.31046778771263633, "percentile": 57.89473684210527, "status": "正常"}, {"dept_id": 20008, "shop_no": "JFK-KIOSK", "store_name": "JFK 24", "area": "Area 1 (NYC)", "total_loss_ml": 73512.0, "total_loss_usd": 77.29927608982828, "total_sales": 991366, "record_count": 48, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 1845.0, 55649.0, 4459.0, 4269.0, 313.0, 4342.0, 2635.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 1.9400528401585206, 58.5159894319683, 4.68872391017173, 4.488935270805813, 0.3291254953764861, 4.565696169088508, 2.7707529722589173], "sales_monthly": [0, 0, 0, 0, 0, 142844, 155770, 141938, 181210, 214552, 155052], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 389.5788412533953, 28.62553765166592, 30.07651228000958, 1.72727774405386, 20.237518177411538, 16.994298686892137], "intensity_total": 74.1522303569015, "active_months": 7, "first_month": "2025-11", "last_active_month": "2026-05", "latest_month_value_ml": 2635.0, "latest_mom_pct": -39.3136803316444, "worst_month": "2025-12", "worst_month_value_ml": 55649.0, "operators": [{"name": "Yaqing Zuo", "qty": 73512.0, "count": 48, "share_pct": 100.0}], "top_operator": "Yaqing Zuo", "top_operator_share_pct": 100.0, "rank": 10, "share_of_system_pct": 2.7456388165023826, "vs_mean_pct": -47.83286248645473, "vs_median_pct": 0.0, "z_score": -0.43305949517766484, "percentile": 52.63157894736842, "status": "正常"}, {"dept_id": 20027, "shop_no": "US00020", "store_name": "21st & 3rd", "area": "Area 1 (NYC)", "total_loss_ml": 56736.0, "total_loss_usd": 59.65899075297226, "total_sales": 488982, "record_count": 91, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 16396.0, 22362.0, 7157.0, 10821.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 17.240708058124174, 23.514071334214, 7.525722589167766, 11.378488771466316], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 110889, 140982, 136550, 100561], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 147.8595712829947, 158.61599353108906, 52.41303551812523, 107.6063284971311], "intensity_total": 116.02881087647398, "active_months": 4, "first_month": "2026-02", "last_active_month": "2026-05", "latest_month_value_ml": 10821.0, "latest_mom_pct": 51.19463462344558, "worst_month": "2026-03", "worst_month_value_ml": 22362.0, "operators": [{"name": "Darwin Coronel", "qty": 45915.0, "count": 75, "share_pct": 80.92745346869712}, {"name": "Javier Cruz", "qty": 10821.0, "count": 16, "share_pct": 19.072546531302876}], "top_operator": "Darwin Coronel", "top_operator_share_pct": 80.92745346869712, "rank": 11, "share_of_system_pct": 2.119063063079214, "vs_mean_pct": -59.73780180149494, "vs_median_pct": -22.820763956904997, "z_score": -0.5408420267238793, "percentile": 47.368421052631575, "status": "正常"}, {"dept_id": 20035, "shop_no": "US00027", "store_name": "52nd & Madison", "area": "Area 1 (NYC)", "total_loss_ml": 44468.0, "total_loss_usd": 46.758953764861296, "total_sales": 656915, "record_count": 82, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5375.0, 14344.0, 13652.0, 11097.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.6519154557463676, 15.082990752972261, 14.355339498018497, 11.668708058124176], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 16072, 214714, 256440, 169689], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 334.43255350920856, 66.80514544929535, 53.23662455155202, 65.39610699573926], "intensity_total": 67.69216717535754, "active_months": 4, "first_month": "2026-02", "last_active_month": "2026-05", "latest_month_value_ml": 11097.0, "latest_mom_pct": -18.71520656314093, "worst_month": "2026-03", "worst_month_value_ml": 14344.0, "operators": [{"name": "Wenny Lin", "qty": 44468.0, "count": 82, "share_pct": 100.0}], "top_operator": "Wenny Lin", "top_operator_share_pct": 100.0, "rank": 12, "share_of_system_pct": 1.6608590011457716, "vs_mean_pct": -68.44367897823035, "vs_median_pct": -39.50919577756012, "z_score": -0.6196615365598925, "percentile": 42.10526315789473, "status": "正常"}, {"dept_id": 20016, "shop_no": "US00010", "store_name": "154 Bleecker", "area": "Area 1 (NYC)", "total_loss_ml": 21318.0, "total_loss_usd": 22.41628533685601, "total_sales": 63494, "record_count": 22, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 6022.0, 15296.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 6.332248348745046, 16.084036988110963], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 5624, 57870], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1070.7681365576102, 264.3165716260584], "intensity_total": 335.7482596780798, "active_months": 2, "first_month": "2026-04", "last_active_month": "2026-05", "latest_month_value_ml": 15296.0, "latest_mom_pct": 154.0019926934573, "worst_month": "2026-05", "worst_month_value_ml": 15296.0, "operators": [{"name": "Juliana Li", "qty": 21318.0, "count": 22, "share_pct": 100.0}], "top_operator": "Juliana Li", "top_operator_share_pct": 100.0, "rank": 13, "share_of_system_pct": 0.7962173290101996, "vs_mean_pct": -84.87187074880622, "vs_median_pct": -71.00065295461965, "z_score": -0.7683957762651182, "percentile": 36.84210526315789, "status": "正常"}, {"dept_id": 20019, "shop_no": "US00012", "store_name": "16th & 6th", "area": "Area 1 (NYC)", "total_loss_ml": 19763.0, "total_loss_usd": 20.781173051519154, "total_sales": 204282, "record_count": 48, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3318.0, 12773.0, 3672.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.488940554821665, 13.431054161162482, 3.861178335535007], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 23824, 104767, 75691], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 139.27132303559435, 121.91816125306633, 48.513033253623284], "intensity_total": 96.7437170186311, "active_months": 3, "first_month": "2026-03", "last_active_month": "2026-05", "latest_month_value_ml": 3672.0, "latest_mom_pct": -71.25185939090268, "worst_month": "2026-04", "worst_month_value_ml": 12773.0, "operators": [{"name": "Juliana Li", "qty": 14271.0, "count": 29, "share_pct": 72.2106967565653}, {"name": "Joselyn Pacheco Trejo", "qty": 5492.0, "count": 19, "share_pct": 27.7893032434347}], "top_operator": "Juliana Li", "top_operator_share_pct": 72.2106967565653, "rank": 14, "share_of_system_pct": 0.7381388063246352, "vs_mean_pct": -85.97536267983193, "vs_median_pct": -73.11595385787354, "z_score": -0.7783863483057931, "percentile": 31.57894736842105, "status": "正常"}, {"dept_id": 20026, "shop_no": "US00019", "store_name": "29th & 3rd", "area": "Area 1 (NYC)", "total_loss_ml": 14792.0, "total_loss_usd": 15.554071334214004, "total_sales": 190638, "record_count": 29, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 14208.0, 584.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 14.939984147952446, 0.6140871862615589], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 89884, 100754], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 158.07040185127497, 5.79629592869762], "intensity_total": 77.59208552334792, "active_months": 2, "first_month": "2026-04", "last_active_month": "2026-05", "latest_month_value_ml": 584.0, "latest_mom_pct": -95.88963963963964, "worst_month": "2026-04", "worst_month_value_ml": 14208.0, "operators": [{"name": "Juan Ortiz-Fontanez", "qty": 11632.0, "count": 19, "share_pct": 78.63710113574905}, {"name": "Darwin Coronel", "qty": 3160.0, "count": 10, "share_pct": 21.362898864250944}], "top_operator": "Juan Ortiz-Fontanez", "top_operator_share_pct": 78.63710113574905, "rank": 15, "share_of_system_pct": 0.5524742813921978, "vs_mean_pct": -89.50298865354824, "vs_median_pct": -79.8781151376646, "z_score": -0.8103240548100988, "percentile": 26.31578947368421, "status": "正常"}, {"dept_id": 20009, "shop_no": "US00007", "store_name": "108th & Broadway", "area": "Area 1 (NYC)", "total_loss_ml": 12084.0, "total_loss_usd": 12.706557463672393, "total_sales": 191039, "record_count": 19, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 521.0, 11563.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5478414795244386, 12.158715984147955], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 7395, 183644], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 70.45300878972279, 62.96421336934503], "intensity_total": 63.25409994817813, "active_months": 2, "first_month": "2026-04", "last_active_month": "2026-05", "latest_month_value_ml": 11563.0, "latest_mom_pct": 2119.3857965451057, "worst_month": "2026-05", "worst_month_value_ml": 11563.0, "operators": [{"name": "Juan Ortiz-Fontanez", "qty": 12084.0, "count": 19, "share_pct": 100.0}], "top_operator": "Juan Ortiz-Fontanez", "top_operator_share_pct": 100.0, "rank": 16, "share_of_system_pct": 0.4513317479950864, "vs_mean_pct": -91.42469678809336, "vs_median_pct": -83.56186745021222, "z_score": -0.8277224272127662, "percentile": 21.052631578947366, "status": "正常"}, {"dept_id": 20022, "shop_no": "US00015", "store_name": "41st & Lexington", "area": "Area 1 (NYC)", "total_loss_ml": 4010.0, "total_loss_usd": 4.216591809775429, "total_sales": 139753, "record_count": 9, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 181.0, 3829.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.19032496697490092, 4.026266842800529], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 6397, 133356], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 28.294513052993594, 28.712618854794684], "intensity_total": 28.693480640844918, "active_months": 2, "first_month": "2026-04", "last_active_month": "2026-05", "latest_month_value_ml": 3829.0, "latest_mom_pct": 2015.4696132596682, "worst_month": "2026-05", "worst_month_value_ml": 3829.0, "operators": [{"name": "Afsana Gu", "qty": 4010.0, "count": 9, "share_pct": 100.0}], "top_operator": "Afsana Gu", "top_operator_share_pct": 100.0, "rank": 17, "share_of_system_pct": 0.149771624417436, "vs_mean_pct": -97.15433913606871, "vs_median_pct": -94.54510828164109, "z_score": -0.8795963041622259, "percentile": 15.789473684210526, "status": "正常"}, {"dept_id": 20029, "shop_no": "US00022", "store_name": "23rd & 8th", "area": "Area 1 (NYC)", "total_loss_ml": 1875.0, "total_loss_usd": 1.9715984147952443, "total_sales": 4771, "record_count": 2, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1875.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.9715984147952443], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4771], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 392.9993712010061], "intensity_total": 392.9993712010061, "active_months": 1, "first_month": "2026-05", "last_active_month": "2026-05", "latest_month_value_ml": 1875.0, "latest_mom_pct": null, "worst_month": "2026-05", "worst_month_value_ml": 1875.0, "operators": [{"name": "Huichen Jiang", "qty": 1875.0, "count": 2, "share_pct": 100.0}], "top_operator": "Huichen Jiang", "top_operator_share_pct": 100.0, "rank": 18, "share_of_system_pct": 0.07003037301314027, "vs_mean_pct": -98.66942291275033, "vs_median_pct": -97.44939601697682, "z_score": -0.8933132632019951, "percentile": 10.526315789473683, "status": "正常"}, {"dept_id": 20025, "shop_no": "US00018", "store_name": "40th & 10th", "area": "Area 1 (NYC)", "total_loss_ml": 250.0, "total_loss_usd": 0.26287978863936595, "total_sales": 7671, "record_count": 1, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 250.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.26287978863936595], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7671], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 32.590275061921524], "intensity_total": 32.590275061921524, "active_months": 1, "first_month": "2026-05", "last_active_month": "2026-05", "latest_month_value_ml": 250.0, "latest_mom_pct": null, "worst_month": "2026-05", "worst_month_value_ml": 250.0, "operators": [{"name": "Jian Ming Juo", "qty": 250.0, "count": 1, "share_pct": 100.0}], "top_operator": "Jian Ming Juo", "top_operator_share_pct": 100.0, "rank": 19, "share_of_system_pct": 0.009337383068418704, "vs_mean_pct": -99.82258972170006, "vs_median_pct": -99.65991946893024, "z_score": -0.9037535716046298, "percentile": 5.263157894736842, "status": "正常"}], "GS07785-01": [{"dept_id": 1127, "shop_no": "US00001", "store_name": "8th & Broadway", "area": "Area 1 (NYC)", "total_loss_ml": 547079.4, "total_loss_usd": 537.6843772787319, "total_sales": 3923950, "record_count": 241, "monthly_ml": [74861.9, 61810.299999999996, 47608.0, 116660.0, 40568.2, 44019.100000000006, 63250.0, 24281.0, 28853.1, 19857.4, 25310.4], "monthly_usd": [73.57629273447824, 60.748828533685604, 46.790425363276086, 114.6565918097754, 39.87152021136064, 43.26315772787318, 62.16380449141349, 23.864021136063414, 28.357604227212686, 19.51638784676354, 24.87574319682959], "sales_monthly": [389091, 398356, 467770, 467086, 385513, 298141, 246171, 305852, 355478, 423711, 186781], "intensity_monthly": [192.40203448550594, 155.16347186938316, 101.77651409880924, 249.76128593021411, 105.23173018808704, 147.64524168094965, 256.93521982686826, 79.38807004695082, 81.16704831241314, 46.86543422285473, 135.5084296582629], "intensity_total": 139.4205838504568, "active_months": 11, "first_month": "2025-07", "last_active_month": "2026-05", "latest_month_value_ml": 25310.4, "latest_mom_pct": 27.46079547171331, "worst_month": "2025-10", "worst_month_value_ml": 116660.0, "operators": [{"name": "Jian Ming Juo", "qty": 267701.8, "count": 142, "share_pct": 48.932897126084434}, {"name": "Conan Yim", "qty": 153180.19999999998, "count": 54, "share_pct": 27.999628573110225}, {"name": "Huanchun Xu", "qty": 97980.0, "count": 20, "share_pct": 17.90964894675252}, {"name": "Huichen Jiang", "qty": 28217.4, "count": 25, "share_pct": 5.157825354052812}], "top_operator": "Jian Ming Juo", "top_operator_share_pct": 48.932897126084434, "rank": 1, "share_of_system_pct": 21.664516039612195, "vs_mean_pct": 311.62580475263167, "vs_median_pct": 646.7335489947177, "z_score": 2.695292943323213, "percentile": 100.0, "status": "异常"}, {"dept_id": 1141, "shop_no": "US00005", "store_name": "54th & 8th", "area": "Area 1 (NYC)", "total_loss_ml": 392406.0, "total_loss_usd": 385.6671915455746, "total_sales": 1871521, "record_count": 193, "monthly_ml": [0.0, 4278.0, 74471.0, 199744.0, 26600.0, 16479.0, 16874.0, 15920.0, 23060.0, 9325.0, 5655.0], "monthly_usd": [0.0, 4.204533685601057, 73.19210568031704, 196.313785997358, 26.14319682959049, 16.19600528401585, 16.584221928665787, 15.64660501981506, 22.663989431968297, 9.164861294583883, 5.557886393659182], "sales_monthly": [0, 66133, 236475, 257454, 228092, 176817, 180002, 154711, 203892, 214830, 153115], "intensity_monthly": [0.0, 64.68782604751031, 314.9212390316101, 775.8434516457309, 116.61960963120146, 93.1980522234853, 93.74340285107944, 102.90153899851983, 113.09909167598532, 43.406414374156306, 36.93302419749861], "intensity_total": 209.67223985197066, "active_months": 10, "first_month": "2025-08", "last_active_month": "2026-05", "latest_month_value_ml": 5655.0, "latest_mom_pct": -39.35656836461126, "worst_month": "2025-10", "worst_month_value_ml": 199744.0, "operators": [{"name": "Yaqing Zuo", "qty": 235115.0, "count": 47, "share_pct": 59.916260199895014}, {"name": "Juan Ortiz-Fontanez", "qty": 76983.0, "count": 83, "share_pct": 19.618201556551124}, {"name": "Huanchun Xu", "qty": 55178.0, "count": 18, "share_pct": 14.061456756522581}, {"name": "Eric Park", "qty": 25130.0, "count": 45, "share_pct": 6.40408148703129}], "top_operator": "Yaqing Zuo", "top_operator_share_pct": 59.916260199895014, "rank": 2, "share_of_system_pct": 15.539400827448564, "vs_mean_pct": 195.24861572152267, "vs_median_pct": 435.61279226894885, "z_score": 1.6887311901708024, "percentile": 94.73684210526315, "status": "正常"}, {"dept_id": 20010, "shop_no": "US00006", "store_name": "102 Fulton", "area": "Area 1 (NYC)", "total_loss_ml": 333212.3000000001, "total_loss_usd": 327.490028005284, "total_sales": 2119099, "record_count": 180, "monthly_ml": [0.0, 15081.0, 49878.1, 182054.80000000002, 15208.9, 21556.9, 12153.2, 11768.0, 13285.0, 12226.4, 0.0], "monthly_usd": [0.0, 14.822013210039632, 49.02154081902246, 178.9283635402906, 14.947716776750331, 21.186702245706744, 11.944492470277416, 11.565907529722587, 13.056856010568033, 12.01643540290621, 0.0], "sales_monthly": [0, 40505, 285829, 302193, 251807, 216570, 197533, 177969, 227248, 246615, 172830], "intensity_monthly": [0.0, 372.3244043945192, 174.5032869302975, 602.4454570423537, 60.39903576945836, 99.53779378491943, 61.5249097619132, 66.12387550640841, 58.46036048722101, 49.57687083105245, 0.0], "intensity_total": 157.24244124507638, "active_months": 9, "first_month": "2025-08", "last_active_month": "2026-04", "latest_month_value_ml": 12226.4, "latest_mom_pct": -7.9683853970643606, "worst_month": "2025-10", "worst_month_value_ml": 182054.80000000002, "operators": [{"name": "Ya Xin Chen", "qty": 297867.9, "count": 137, "share_pct": 89.3928285360414}, {"name": "Shangxian Piao", "qty": 35344.4, "count": 43, "share_pct": 10.60717146395856}], "top_operator": "Ya Xin Chen", "top_operator_share_pct": 89.3928285360414, "rank": 3, "share_of_system_pct": 13.195311718821934, "vs_mean_pct": 150.71092265761675, "vs_median_pct": 354.8166195760481, "z_score": 1.3035187719555323, "percentile": 89.47368421052632, "status": "正常"}, {"dept_id": 1128, "shop_no": "US00002", "store_name": "28th & 6th", "area": "Area 1 (NYC)", "total_loss_ml": 320702.50000000006, "total_loss_usd": 315.19505944517834, "total_sales": 2478154, "record_count": 189, "monthly_ml": [113634.0, 39728.6, 50186.5, 38891.0, 18595.7, 22474.0, 18086.9, 3782.0, 2470.8, 2284.0, 10569.0], "monthly_usd": [111.68255746367241, 39.046338705416126, 49.32464464993395, 38.22312285336856, 18.276355085865262, 22.088052840158525, 17.7762927344782, 3.7170515191545577, 2.4283688243064736, 2.244776750330251, 10.387498018494055], "sales_monthly": [364922, 365091, 273165, 266065, 237707, 167698, 149761, 141557, 188600, 190441, 133147], "intensity_monthly": [311.39257156323816, 108.81834939782136, 183.72229238738493, 146.1710484280157, 78.22950102437035, 134.01471693162708, 120.77176300906112, 26.717152807702906, 13.100742311770944, 11.993215746609186, 79.37843135782256], "intensity_total": 129.4118525321671, "active_months": 11, "first_month": "2025-07", "last_active_month": "2026-05", "latest_month_value_ml": 10569.0, "latest_mom_pct": 362.74080560420316, "worst_month": "2025-07", "worst_month_value_ml": 113634.0, "operators": [{"name": "Lin Weng", "qty": 223989.1, "count": 75, "share_pct": 69.8432659552077}, {"name": "Afsana Gu", "qty": 84973.40000000001, "count": 95, "share_pct": 26.496020455094673}, {"name": "Jian Ming Juo", "qty": 7151.0, "count": 13, "share_pct": 2.2297924088524406}, {"name": "Brionna Jiles", "qty": 4589.0, "count": 6, "share_pct": 1.4309211808451756}], "top_operator": "Lin Weng", "top_operator_share_pct": 69.8432659552077, "rank": 4, "share_of_system_pct": 12.699919710363305, "vs_mean_pct": 141.29847449690277, "vs_median_pct": 337.7414247300821, "z_score": 1.2221092586223667, "percentile": 84.21052631578947, "status": "需关注"}, {"dept_id": 1140, "shop_no": "US00003", "store_name": "100 Maiden Ln", "area": "Area 1 (NYC)", "total_loss_ml": 201920.19999999998, "total_loss_usd": 198.45261400264204, "total_sales": 1292740, "record_count": 225, "monthly_ml": [0.0, 0.0, 20055.0, 40315.899999999994, 34169.7, 36050.8, 21143.199999999997, 9244.4, 12681.8, 11983.2, 16276.2], "monthly_usd": [0.0, 0.0, 19.710594451783358, 39.62355297225892, 33.58290198150595, 35.43169775429326, 20.780106737120214, 9.085645442536329, 12.46401479524439, 11.777411889035669, 15.996687978863935], "sales_monthly": [0, 0, 150712, 200465, 153920, 127541, 131879, 114029, 145956, 155563, 112675], "intensity_monthly": [0.0, 0.0, 133.06836880938476, 201.1119147980944, 221.99649168399165, 282.66047780713654, 160.32272006915426, 81.07060484613562, 86.88782920880264, 77.03117065111886, 144.45262924339917], "intensity_total": 156.19552268824356, "active_months": 9, "first_month": "2025-09", "last_active_month": "2026-05", "latest_month_value_ml": 16276.2, "latest_mom_pct": 35.82515521730422, "worst_month": "2025-10", "worst_month_value_ml": 40315.899999999994, "operators": [{"name": "Dominique Meadows", "qty": 129128.79999999999, "count": 173, "share_pct": 63.95041209349039}, {"name": "Jay Gregory", "qty": 72791.40000000001, "count": 52, "share_pct": 36.049587906509615}], "top_operator": "Dominique Meadows", "top_operator_share_pct": 63.95041209349039, "rank": 5, "share_of_system_pct": 7.996103329099399, "vs_mean_pct": 51.92596325288857, "vs_median_pct": 175.61006237800797, "z_score": 0.44911454762826125, "percentile": 78.94736842105263, "status": "正常"}, {"dept_id": 20011, "shop_no": "US00004", "store_name": "37th & Broadway", "area": "Area 1 (NYC)", "total_loss_ml": 187743.0, "total_loss_usd": 184.51887978863937, "total_sales": 1537938, "record_count": 146, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 15757.0, 18067.0, 91182.0, 20289.0, 12332.0, 20020.0, 10096.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 15.486404227212685, 17.756734478203434, 89.61612681638046, 19.940575957727876, 12.120221928665787, 19.676195508586527, 9.922620871862616], "sales_monthly": [0, 0, 0, 0, 68260, 210119, 195218, 211966, 295481, 327364, 229530], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 230.8379724582479, 85.98460872172436, 467.07783093772093, 95.71818121774247, 41.7353400049411, 61.15516672572427, 43.9855356598266], "intensity_total": 122.07449194961045, "active_months": 7, "first_month": "2025-11", "last_active_month": "2026-05", "latest_month_value_ml": 10096.0, "latest_mom_pct": -49.57042957042957, "worst_month": "2026-01", "worst_month_value_ml": 91182.0, "operators": [{"name": "Tunisia Hayward", "qty": 170986.0, "count": 132, "share_pct": 91.07450078032203}, {"name": "Yaqing Zuo", "qty": 16757.0, "count": 14, "share_pct": 8.925499219677963}], "top_operator": "Tunisia Hayward", "top_operator_share_pct": 91.07450078032203, "rank": 6, "share_of_system_pct": 7.4346817570263335, "vs_mean_pct": 41.25895338350033, "vs_median_pct": 156.25895745464967, "z_score": 0.3568541635752028, "percentile": 73.68421052631578, "status": "正常"}, {"dept_id": 20031, "shop_no": "US00024", "store_name": "15th & 3rd", "area": "Area 1 (NYC)", "total_loss_ml": 107032.2, "total_loss_usd": 105.19413051519156, "total_sales": 676337, "record_count": 129, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 22015.0, 18958.2, 21144.0, 12970.0, 19056.0, 12889.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 21.636935270805814, 18.632629854689565, 20.780892998679, 12.747265521796567, 18.728750330250993, 12.667656538969618], "sales_monthly": [0, 0, 0, 0, 0, 55066, 123712, 107067, 136004, 151164, 103324], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 399.792975701885, 153.2446326952923, 197.4838185435288, 95.36484221052322, 126.06176073668335, 124.74352522163292], "intensity_total": 158.25276452419428, "active_months": 6, "first_month": "2025-12", "last_active_month": "2026-05", "latest_month_value_ml": 12889.0, "latest_mom_pct": -32.36251049538203, "worst_month": "2025-12", "worst_month_value_ml": 22015.0, "operators": [{"name": "Clara Mae Venturina", "qty": 107032.2, "count": 129, "share_pct": 100.0}], "top_operator": "Clara Mae Venturina", "top_operator_share_pct": 100.0, "rank": 7, "share_of_system_pct": 4.23850873137424, "vs_mean_pct": -19.46833410388945, "vs_median_pct": 46.093116579992625, "z_score": -0.16838420544192353, "percentile": 68.42105263157895, "status": "正常"}, {"dept_id": 20008, "shop_no": "US00008", "store_name": "33rd & 10th", "area": "Area 1 (NYC)", "total_loss_ml": 106574.0, "total_loss_usd": 104.74379920739761, "total_sales": 991366, "record_count": 120, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 18919.0, 25858.0, 19943.0, 16180.0, 15140.0, 10534.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 18.594103038309118, 25.4139392338177, 19.600517833553504, 15.902140026420083, 14.880000000000003, 10.353099075297225], "sales_monthly": [0, 0, 0, 0, 0, 142844, 155770, 141938, 181210, 214552, 155052], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 132.44518495701604, 166.00115554984916, 140.50500922938184, 89.2886706031676, 70.56564376002088, 67.93849805226633], "intensity_total": 107.50217376831564, "active_months": 6, "first_month": "2025-12", "last_active_month": "2026-05", "latest_month_value_ml": 10534.0, "latest_mom_pct": -30.422721268163805, "worst_month": "2026-01", "worst_month_value_ml": 25858.0, "operators": [{"name": "Yaqing Zuo", "qty": 106574.0, "count": 120, "share_pct": 100.0}], "top_operator": "Yaqing Zuo", "top_operator_share_pct": 100.0, "rank": 8, "share_of_system_pct": 4.220363867485469, "vs_mean_pct": -19.813086517776092, "vs_median_pct": 45.46769856544231, "z_score": -0.1713660148241084, "percentile": 63.1578947368421, "status": "正常"}, {"dept_id": 20032, "shop_no": "US00025", "store_name": "221 Grand", "area": "Area 1 (NYC)", "total_loss_ml": 90043.9, "total_loss_usd": 88.4975714663144, "total_sales": 1204965, "record_count": 85, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 13785.0, 31614.899999999998, 15132.0, 19552.0, 9960.0, 0.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 13.548269484808454, 31.071975693527087, 14.872137384412158, 19.216232496697494, 9.788956406869222, 0.0], "sales_monthly": [0, 0, 0, 0, 0, 152358, 269076, 208262, 273980, 110595, 190694], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 90.47769070216201, 117.49431387414708, 72.65847826295723, 71.36287320242353, 90.0583209005832, 0.0], "intensity_total": 74.72739872112467, "active_months": 5, "first_month": "2025-12", "last_active_month": "2026-04", "latest_month_value_ml": 9960.0, "latest_mom_pct": -49.05891980360065, "worst_month": "2026-01", "worst_month_value_ml": 31614.899999999998, "operators": [{"name": "Juliana Li", "qty": 69586.9, "count": 67, "share_pct": 77.28108178344118}, {"name": "Kayen Wu He", "qty": 20457.0, "count": 18, "share_pct": 22.718918216558816}], "top_operator": "Juliana Li", "top_operator_share_pct": 77.28108178344118, "rank": 9, "share_of_system_pct": 3.565766716530062, "vs_mean_pct": -32.25043238592883, "vs_median_pct": 22.90501344471288, "z_score": -0.2789382698840261, "percentile": 57.89473684210527, "status": "正常"}, {"dept_id": 20035, "shop_no": "US00027", "store_name": "52nd & Madison", "area": "Area 1 (NYC)", "total_loss_ml": 73263.0, "total_loss_usd": 72.00485072655218, "total_sales": 656915, "record_count": 80, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2226.0, 38153.0, 13406.0, 19478.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.1877727873183623, 37.4977965653897, 13.175778071334216, 19.14350330250991], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 16072, 214714, 256440, 169689], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 138.50174216027875, 177.69218588447887, 52.27733582904383, 114.78646229278267], "intensity_total": 111.52584428731268, "active_months": 4, "first_month": "2026-02", "last_active_month": "2026-05", "latest_month_value_ml": 19478.0, "latest_mom_pct": 45.29315231985678, "worst_month": "2026-03", "worst_month_value_ml": 38153.0, "operators": [{"name": "Wenny Lin", "qty": 73263.0, "count": 80, "share_pct": 100.0}], "top_operator": "Wenny Lin", "top_operator_share_pct": 100.0, "rank": 10, "share_of_system_pct": 2.901237806815808, "vs_mean_pct": -44.87648167049965, "vs_median_pct": 0.0, "z_score": -0.3881426458366804, "percentile": 52.63157894736842, "status": "正常"}, {"dept_id": 20008, "shop_no": "JFK-KIOSK", "store_name": "JFK 24", "area": "Area 1 (NYC)", "total_loss_ml": 38463.0, "total_loss_usd": 37.80247291941876, "total_sales": 991366, "record_count": 38, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 24302.0, 2236.0, 4590.0, 682.0, 5422.0, 1231.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 23.884660501981507, 2.1976010568031707, 4.511175693527081, 0.6702879788639367, 5.328887714663145, 1.209859973579921], "sales_monthly": [0, 0, 0, 0, 0, 142844, 155770, 141938, 181210, 214552, 155052], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 170.1296519279774, 14.354497014829557, 32.33806309797235, 3.763589205893714, 25.271262910623065, 7.939271986172381], "intensity_total": 38.79798177464226, "active_months": 6, "first_month": "2025-12", "last_active_month": "2026-05", "latest_month_value_ml": 1231.0, "latest_mom_pct": -77.29620066396163, "worst_month": "2025-12", "worst_month_value_ml": 24302.0, "operators": [{"name": "Yaqing Zuo", "qty": 38463.0, "count": 38, "share_pct": 100.0}], "top_operator": "Yaqing Zuo", "top_operator_share_pct": 100.0, "rank": 11, "share_of_system_pct": 1.5231468785547468, "vs_mean_pct": -71.06020930745981, "vs_median_pct": -47.50010237091028, "z_score": -0.614609181192494, "percentile": 47.368421052631575, "status": "正常"}, {"dept_id": 20019, "shop_no": "US00012", "store_name": "16th & 6th", "area": "Area 1 (NYC)", "total_loss_ml": 36371.0, "total_loss_usd": 35.74639894319683, "total_sales": 204282, "record_count": 46, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 17588.0, 15293.0, 3490.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 17.285960369881114, 15.030372523117565, 3.430066050198151], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 23824, 104767, 75691], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 738.2471457353929, 145.9715368388901, 46.10852016752322], "intensity_total": 178.04309728708353, "active_months": 3, "first_month": "2026-03", "last_active_month": "2026-05", "latest_month_value_ml": 3490.0, "latest_mom_pct": -77.17910154972863, "worst_month": "2026-03", "worst_month_value_ml": 17588.0, "operators": [{"name": "Juliana Li", "qty": 29947.0, "count": 29, "share_pct": 82.33757664073025}, {"name": "Joselyn Pacheco Trejo", "qty": 6424.0, "count": 17, "share_pct": 17.662423359269745}], "top_operator": "Juliana Li", "top_operator_share_pct": 82.33757664073025, "rank": 12, "share_of_system_pct": 1.4403030216029613, "vs_mean_pct": -72.63424258954375, "vs_median_pct": -50.355568295046616, "z_score": -0.6282232039500906, "percentile": 42.10526315789473, "status": "正常"}, {"dept_id": 20027, "shop_no": "US00020", "store_name": "21st & 3rd", "area": "Area 1 (NYC)", "total_loss_ml": 32000.0, "total_loss_usd": 31.45046235138706, "total_sales": 488982, "record_count": 66, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8842.0, 11903.0, 2786.0, 8469.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.690155878467637, 11.698589167767505, 2.738155878467636, 8.32356142668428], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 110889, 140982, 136550, 100561], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 79.73739505271037, 84.42921791434367, 20.402782863419993, 84.21753960282813], "intensity_total": 65.44208171261928, "active_months": 4, "first_month": "2026-02", "last_active_month": "2026-05", "latest_month_value_ml": 8469.0, "latest_mom_pct": 203.98420674802585, "worst_month": "2026-03", "worst_month_value_ml": 11903.0, "operators": [{"name": "Darwin Coronel", "qty": 23531.0, "count": 52, "share_pct": 73.534375}, {"name": "Javier Cruz", "qty": 8469.0, "count": 14, "share_pct": 26.465625}], "top_operator": "Darwin Coronel", "top_operator_share_pct": 73.534375, "rank": 13, "share_of_system_pct": 1.2672100489756883, "vs_mean_pct": -75.92300906946193, "vs_median_pct": -56.3217449462894, "z_score": -0.6566681817098682, "percentile": 36.84210526315789, "status": "正常"}, {"dept_id": 20009, "shop_no": "US00007", "store_name": "108th & Broadway", "area": "Area 1 (NYC)", "total_loss_ml": 25731.0, "total_loss_usd": 25.289120211360636, "total_sales": 191039, "record_count": 21, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 281.0, 25450.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2761743725231176, 25.012945838837517], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 7395, 183644], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 37.99864773495605, 138.5833460390756], "intensity_total": 134.68977538617767, "active_months": 2, "first_month": "2026-04", "last_active_month": "2026-05", "latest_month_value_ml": 25450.0, "latest_mom_pct": 8956.93950177936, "worst_month": "2026-05", "worst_month_value_ml": 25450.0, "operators": [{"name": "Juan Ortiz-Fontanez", "qty": 25731.0, "count": 21, "share_pct": 100.0}], "top_operator": "Juan Ortiz-Fontanez", "top_operator_share_pct": 100.0, "rank": 14, "share_of_system_pct": 1.0189556803185449, "vs_mean_pct": -80.63984207394765, "vs_median_pct": -64.87858810040538, "z_score": -0.6974646963692244, "percentile": 31.57894736842105, "status": "正常"}, {"dept_id": 20026, "shop_no": "US00019", "store_name": "29th & 3rd", "area": "Area 1 (NYC)", "total_loss_ml": 13938.0, "total_loss_usd": 13.698642007926026, "total_sales": 190638, "record_count": 19, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 13735.0, 203.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 13.499128137384414, 0.19951387054161163], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 89884, 100754], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 152.80806372658094, 2.014808345078111], "intensity_total": 73.11239102382525, "active_months": 2, "first_month": "2026-04", "last_active_month": "2026-05", "latest_month_value_ml": 203.0, "latest_mom_pct": -98.5220240262104, "worst_month": "2026-04", "worst_month_value_ml": 13735.0, "operators": [{"name": "Juan Ortiz-Fontanez", "qty": 11202.0, "count": 11, "share_pct": 80.37021093413689}, {"name": "Darwin Coronel", "qty": 2736.0, "count": 8, "share_pct": 19.629789065863108}], "top_operator": "Juan Ortiz-Fontanez", "top_operator_share_pct": 80.37021093413689, "rank": 15, "share_of_system_pct": 0.5519491769569733, "vs_mean_pct": -89.51296563781752, "vs_median_pct": -80.97539003316817, "z_score": -0.774209519686785, "percentile": 26.31578947368421, "status": "正常"}, {"dept_id": 20016, "shop_no": "US00010", "store_name": "154 Bleecker", "area": "Area 1 (NYC)", "total_loss_ml": 8558.0, "total_loss_usd": 8.411033025099076, "total_sales": 63494, "record_count": 20, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 514.0, 8044.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5051730515191546, 7.905859973579921], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 5624, 57870], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 91.39402560455193, 139.0012096077415], "intensity_total": 134.78438907613318, "active_months": 2, "first_month": "2026-04", "last_active_month": "2026-05", "latest_month_value_ml": 8044.0, "latest_mom_pct": 1464.9805447470817, "worst_month": "2026-05", "worst_month_value_ml": 8044.0, "operators": [{"name": "Juliana Li", "qty": 8558.0, "count": 20, "share_pct": 100.0}], "top_operator": "Juliana Li", "top_operator_share_pct": 100.0, "rank": 16, "share_of_system_pct": 0.33889948747293563, "vs_mean_pct": -93.56090973801422, "vs_median_pct": -88.31879666407328, "z_score": -0.8092207254400687, "percentile": 21.052631578947366, "status": "正常"}, {"dept_id": 20029, "shop_no": "US00022", "store_name": "23rd & 8th", "area": "Area 1 (NYC)", "total_loss_ml": 4872.0, "total_loss_usd": 4.78833289299868, "total_sales": 4771, "record_count": 2, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4872.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.78833289299868], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4771], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1021.1695661286941], "intensity_total": 1021.1695661286941, "active_months": 1, "first_month": "2026-05", "last_active_month": "2026-05", "latest_month_value_ml": 4872.0, "latest_mom_pct": null, "worst_month": "2026-05", "worst_month_value_ml": 4872.0, "operators": [{"name": "Huichen Jiang", "qty": 4872.0, "count": 2, "share_pct": 100.0}], "top_operator": "Huichen Jiang", "top_operator_share_pct": 100.0, "rank": 17, "share_of_system_pct": 0.19293272995654856, "vs_mean_pct": -96.33427813082558, "vs_median_pct": -93.34998566807256, "z_score": -0.8332079567424115, "percentile": 15.789473684210526, "status": "正常"}, {"dept_id": 20022, "shop_no": "US00015", "store_name": "41st & Lexington", "area": "Area 1 (NYC)", "total_loss_ml": 4413.0, "total_loss_usd": 4.337215323645971, "total_sales": 139753, "record_count": 5, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4413.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.337215323645971], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 6397, 133356], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 33.09187438135517], "intensity_total": 31.577139667842548, "active_months": 1, "first_month": "2026-05", "last_active_month": "2026-05", "latest_month_value_ml": 4413.0, "latest_mom_pct": null, "worst_month": "2026-05", "worst_month_value_ml": 4413.0, "operators": [{"name": "Afsana Gu", "qty": 4413.0, "count": 5, "share_pct": 100.0}], "top_operator": "Afsana Gu", "top_operator_share_pct": 100.0, "rank": 18, "share_of_system_pct": 0.17475618581655353, "vs_mean_pct": -96.67963246948548, "vs_median_pct": -93.97649563899922, "z_score": -0.8361949722518459, "percentile": 10.526315789473683, "status": "正常"}, {"dept_id": 20025, "shop_no": "US00018", "store_name": "40th & 10th", "area": "Area 1 (NYC)", "total_loss_ml": 910.0, "total_loss_usd": 0.8943725231175694, "total_sales": 7671, "record_count": 1, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 910.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.8943725231175694], "sales_monthly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7671], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 118.62860122539435], "intensity_total": 118.62860122539435, "active_months": 1, "first_month": "2026-05", "last_active_month": "2026-05", "latest_month_value_ml": 910.0, "latest_mom_pct": null, "worst_month": "2026-05", "worst_month_value_ml": 910.0, "operators": [{"name": "Jian Ming Juo", "qty": 910.0, "count": 1, "share_pct": 100.0}], "top_operator": "Jian Ming Juo", "top_operator_share_pct": 100.0, "rank": 19, "share_of_system_pct": 0.03603628576774614, "vs_mean_pct": -99.31531057041282, "vs_median_pct": -98.7578996219101, "z_score": -0.8589913019458522, "percentile": 5.263157894736842, "status": "正常"}], "GS07786-02": [{"dept_id": 20032, "shop_no": "US00025", "store_name": "221 Grand", "area": "Area 1 (NYC)", "total_loss_ml": 60.0, "total_loss_usd": 0.06356671070013209, "total_sales": 1204965, "record_count": 1, "monthly_ml": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 60.0, 0.0], "monthly_usd": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.06356671070013209, 0.0], "sales_monthly": [0, 0, 0, 0, 0, 152358, 269076, 208262, 273980, 110595, 190694], "intensity_monthly": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5425200054252, 0.0], "intensity_total": 0.049793977418431244, "active_months": 1, "first_month": "2026-04", "last_active_month": "2026-04", "latest_month_value_ml": 60.0, "latest_mom_pct": null, "worst_month": "2026-04", "worst_month_value_ml": 60.0, "operators": [{"name": "Kayen Wu He", "qty": 60.0, "count": 1, "share_pct": 100.0}], "top_operator": "Kayen Wu He", "top_operator_share_pct": 100.0, "rank": 1, "share_of_system_pct": 100.0, "vs_mean_pct": 0.0, "vs_median_pct": 0.0, "z_score": 0, "percentile": 100.0, "status": "正常"}]}, "non_stores": [{"dept_id": 1112, "shop_no": "NON-STORE", "store_name": "运营发展部", "area": "非门店", "total_loss_ml": 61939.0, "total_loss_usd": 60.194560766182306, "record_count": 25, "monthly_ml": [61939.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "monthly_usd": [60.194560766182306, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "first_month": "2025-07", "last_active_month": "2025-07", "top_operator": "YANRANWU(Aida)"}, {"dept_id": 1124, "shop_no": "NON-STORE", "store_name": "Operations Department", "area": "非门店", "total_loss_ml": 180481.9, "total_loss_usd": 171.90835072655221, "record_count": 59, "monthly_ml": [0.0, 0.0, 70618.9, 104863.0, 0.0, 5000.0, 0.0, 0.0, 0.0, 0.0, 0.0], "monthly_usd": [0.0, 0.0, 69.2636354029062, 97.66519088507269, 0.0, 4.979524438573316, 0.0, 0.0, 0.0, 0.0, 0.0], "first_month": "2025-09", "last_active_month": "2025-12", "top_operator": "Jung Han Liang"}]};
+
+const fmtN = (v, dp=1) => (v==null || isNaN(v)) ? "—" :
+  v.toLocaleString("en-US", {minimumFractionDigits:dp, maximumFractionDigits:dp});
+const fmt0 = v => fmtN(v, 0);
+const fmtUsd = v => "$" + fmtN(v, 2);
+const fmtPct = (v, dp=1) => (v==null || isNaN(v)) ? "—" : (v>=0?"+":"") + v.toFixed(dp) + "%";
+const fmtPctU = (v, dp=1) => (v==null || isNaN(v)) ? "—" : v.toFixed(dp) + "%";
+const PALETTE = { primary:"#0365C0", navy:"#1A365D", teal:"#00A5A5", gold:"#DCBD23",
+                  red:"#C0392B", amber:"#E67E22", green:"#27AE60" };
+const STATUS_COLOR = {"异常":PALETTE.red, "需关注":PALETTE.amber, "正常":PALETTE.primary};
+const STATUS_CLASS = {"异常":"s-yc", "需关注":"s-xz", "正常":"s-zc"};
+const SPEC_COLORS = {
+  "GS07788-01": PALETTE.primary,
+  "GS07786-01": PALETTE.gold,
+  "GS07785-01": PALETTE.teal,
+  "GS07786-02": PALETTE.amber,
+};
+
+const state = {
+  spec: "ALL",
+  metric: "ml",   // ml | usd | intensity
+  monthFrom: DATA.meta.months[0],
+  monthTo:   DATA.meta.months[DATA.meta.months.length - 1],
+  selectedStore: null,
+  sort: "metric_desc",
+};
+
+const storeKey = s => `${s.dept_id}|${s.shop_no}`;
+
+// pick which dataset to show (per-spec or aggregate)
+function activeStoresAll() {
+  return state.spec === "ALL" ? DATA.stores_all : (DATA.stores_by_spec[state.spec] || []);
+}
+
+// metric extractor: returns the right monthly array given current state
+function monthlyArr(s) {
+  if (state.metric === "usd") return s.monthly_usd;
+  if (state.metric === "intensity") return s.intensity_monthly || [];
+  return s.monthly_ml;
+}
+function metricLabel() {
+  if (state.metric === "usd") return "报损金额 (USD)";
+  if (state.metric === "intensity") return "损耗强度 (mL/千单)";
+  return "报损量 (mL)";
+}
+function metricFmt(v) {
+  if (v == null || isNaN(v)) return "—";
+  if (state.metric === "usd") return fmtUsd(v);
+  if (state.metric === "intensity") return fmtN(v, 1);
+  return fmtN(v, 0);
+}
+function metricUnit() {
+  return state.metric === "usd" ? "USD" : (state.metric === "intensity" ? "mL/千单" : "mL");
+}
+
+function initToolbar() {
+  const fSpec = document.getElementById("fSpec");
+  fSpec.innerHTML = `<option value="ALL">全部规格（合计）</option>` +
+    DATA.meta.specs.filter(sp => (DATA.stores_by_spec[sp.mid] || []).length > 0)
+      .map(sp => `<option value="${sp.mid}">${sp.label_cn}（${sp.mid}）</option>`).join("");
+  fSpec.value = state.spec;
+  fSpec.onchange = () => { state.spec = fSpec.value; state.selectedStore = null;
+    document.getElementById("fStore").value = ""; render(); };
+
+  const fMet = document.getElementById("fMetric");
+  fMet.value = state.metric;
+  fMet.onchange = () => { state.metric = fMet.value; render(); };
+
+  const fMF = document.getElementById("fMonthFrom");
+  const fMT = document.getElementById("fMonthTo");
+  fMF.innerHTML = DATA.meta.months.map(m => `<option value="${m}">${m}</option>`).join("");
+  fMT.innerHTML = DATA.meta.months.map(m => `<option value="${m}">${m}</option>`).join("");
+  fMT.value = state.monthTo;
+  fMF.onchange = () => { state.monthFrom = fMF.value; render(); };
+  fMT.onchange = () => { state.monthTo = fMT.value; render(); };
+
+  const fS = document.getElementById("fStore");
+  fS.innerHTML = `<option value="">（全部 / 系统视图）</option>` +
+    DATA.stores_all.map(s => `<option value="${storeKey(s)}">${s.store_name} (${s.shop_no})</option>`).join("");
+  fS.onchange = () => { state.selectedStore = fS.value || null; render(); };
+
+  document.getElementById("fSort").onchange = (e) => { state.sort = e.target.value; render(); };
+  document.getElementById("btnPrint").onclick = () => window.print();
+  document.getElementById("btnExportCsv").onclick = exportCurrentCsv;
+}
+
+function activeMonths() {
+  const all = DATA.meta.months;
+  const i1 = all.indexOf(state.monthFrom);
+  const i2 = all.indexOf(state.monthTo);
+  return all.slice(Math.min(i1, i2), Math.max(i1, i2) + 1);
+}
+
+function storeView(s, months) {
+  const idx = months.map(m => DATA.meta.months.indexOf(m));
+  const arr = monthlyArr(s);
+  const mView = idx.map(i => arr[i] || 0);
+  const total = mView.reduce((a,b)=>a+b, 0);
+  let lastIdx = -1;
+  for (let i = mView.length - 1; i >= 0; i--) if (mView[i] > 0) { lastIdx = i; break; }
+  let latestMom = null, latestValue = 0;
+  if (lastIdx >= 0) {
+    latestValue = mView[lastIdx];
+    if (lastIdx >= 1 && mView[lastIdx-1] > 0) {
+      latestMom = (latestValue - mView[lastIdx-1]) / mView[lastIdx-1] * 100;
+    }
+  }
+  const active = mView.filter(v => v > 0).length;
+  return Object.assign({}, s, {
+    monthly_view: mView,
+    total_view: total,
+    active_view: active,
+    latest_view: latestValue,
+    latest_mom_view: latestMom,
+    last_active_idx_view: lastIdx,
+  });
+}
+
+function sortStores(stores) {
+  const cmp = {
+    metric_desc: (a,b) => b.total_view - a.total_view,
+    metric_asc:  (a,b) => a.total_view - b.total_view,
+    latest_desc: (a,b) => b.latest_view - a.latest_view,
+    mom_desc:    (a,b) => (b.latest_mom_view ?? -Infinity) - (a.latest_mom_view ?? -Infinity),
+  };
+  return stores.slice().sort(cmp[state.sort] || cmp.metric_desc);
+}
+
+let chartRank, chartPareto, chartSpecMix, chartTrend, chartDrillMonthly, chartDrillSpec;
+
+function renderKpis(months, stores) {
+  const sysTotal = stores.reduce((a,s)=>a + s.total_view, 0);
+  const recCount = stores.reduce((a,s)=>a + s.record_count, 0);
+  const mean = stores.length ? sysTotal / stores.length : 0;
+  const top = stores.slice().sort((a,b)=>b.total_view - a.total_view)[0];
+  let latestMom = null;
+  if (months.length >= 2) {
+    const sysM = months.map(m => stores.reduce((a,s)=>a + (monthlyArr(s)[DATA.meta.months.indexOf(m)]||0), 0));
+    const prev = sysM[sysM.length - 2], cur = sysM[sysM.length - 1];
+    if (prev) latestMom = (cur - prev) / prev * 100;
+  }
+  const specLabel = state.spec === "ALL" ? "全部规格" : (DATA.meta.specs.find(sp=>sp.mid===state.spec)?.label_cn || state.spec);
+  document.getElementById("kpiScope").textContent =
+    `${specLabel} · ${months[0]} → ${months[months.length-1]} · 指标：${metricLabel()}`;
+  const cells = [
+    {label:"系统总" + metricLabel(), value: metricFmt(sysTotal), sub:"单位：" + metricUnit()},
+    {label:"覆盖门店数", value: stores.length, sub:`记录数 ${recCount}`},
+    {label:"店均", value: metricFmt(mean), sub:"= 系统总 / 门店数"},
+    {label:"最高门店", value: top ? top.store_name : "—",
+      sub: top ? `${metricFmt(top.total_view)} · 占 ${fmtPctU(sysTotal ? top.total_view/sysTotal*100 : 0)}` : "",
+      accent: true},
+    {label:"统计周期", value: `${months[0]} → ${months[months.length-1]}`, sub: `${months.length} 个月`},
+    {label:"过期销毁记录数", value: recCount, sub:"reason = 015"},
+    {label:"系统最新月环比", value: fmtPct(latestMom), sub: months[months.length-1] || ""},
+  ];
+  document.getElementById("kpiGrid").innerHTML = cells.map(c => `
+    <div class="kpi ${c.accent ? "accent" : ""}">
+      <div class="label">${c.label}</div>
+      <div class="value">${c.value}</div>
+      <div class="sub">${c.sub || ""}</div>
+    </div>`).join("");
+}
+
+function renderAlerts(stores) {
+  const flagged = stores.filter(s => s.status !== "正常");
+  const sec = document.getElementById("secAlerts");
+  if (!flagged.length) { sec.style.display = "none"; return; }
+  sec.style.display = "";
+  document.getElementById("alertStrip").innerHTML = flagged.map(s => {
+    const reason = s.status === "异常"
+      ? `统计离群：总量 ${fmtN(s.total_loss_ml,0)} mL（z=${(s.z_score??0).toFixed(2)}）`
+      : `最新月环比 ${fmtPct(s.latest_mom_pct)}，且总量高于中位数`;
+    const cls = STATUS_CLASS[s.status];
+    return `<div class="alert-card ${cls}">
+      <div class="title">${s.store_name} <span class="status-pill ${cls}">${s.status}</span></div>
+      <div class="why">${reason}</div>
+    </div>`;
+  }).join("");
+}
+
+function renderRank(stores) {
+  const sysTotal = stores.reduce((a,s)=>a + s.total_view, 0) || 1;
+  const arr = stores.slice().sort((a,b)=>b.total_view - a.total_view);
+  const labels = arr.map(s => s.store_name);
+  const data   = arr.map(s => s.total_view);
+  const colors = arr.map(s => STATUS_COLOR[s.status] || PALETTE.primary);
+  const vals = arr.map(s => s.total_view);
+  const mean = vals.length ? vals.reduce((a,b)=>a+b,0) / vals.length : 0;
+  const sortedV = vals.slice().sort((a,b)=>a-b);
+  const median = sortedV.length ? sortedV[Math.floor((sortedV.length-1)/2)] : 0;
+  if (chartRank) chartRank.destroy();
+  chartRank = new Chart(document.getElementById("chartRank"), {
+    type: "bar",
+    data: { labels, datasets: [{ label: metricLabel(), data, backgroundColor: colors, borderRadius: 4 }] },
+    options: {
+      indexAxis: "y", maintainAspectRatio: false,
+      onClick: (evt, els) => {
+        if (!els.length) return;
+        const s = arr[els[0].index];
+        state.selectedStore = storeKey(s);
+        document.getElementById("fStore").value = state.selectedStore;
+        render();
+        document.getElementById("secDrill").scrollIntoView({behavior:"smooth"});
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: {
+          label: ctx => {
+            const s = arr[ctx.dataIndex];
+            const pct = sysTotal ? s.total_view / sysTotal * 100 : 0;
+            return [
+              `${metricFmt(s.total_view)} (占系统 ${fmtPctU(pct)})`,
+              `较店均 ${fmtPct(mean ? (s.total_view-mean)/mean*100 : 0)}`,
+              `状态: ${s.status} · 活跃 ${s.active_view} 月`
+            ];
+          }
+        }}
+      },
+      scales: {
+        x: { ticks: { callback: v => v.toLocaleString() }, grid: { color: "#F0F2F7" } },
+        y: { grid: { display: false } }
+      }
+    },
+    plugins: [{
+      id:"refLines",
+      afterDraw(c) {
+        const {ctx, chartArea, scales} = c;
+        if (!chartArea) return;
+        const xMean = scales.x.getPixelForValue(mean);
+        const xMed  = scales.x.getPixelForValue(median);
+        ctx.save(); ctx.setLineDash([6,4]); ctx.lineWidth = 1.5;
+        ctx.strokeStyle = PALETTE.teal;
+        ctx.beginPath(); ctx.moveTo(xMean, chartArea.top); ctx.lineTo(xMean, chartArea.bottom); ctx.stroke();
+        ctx.fillStyle = PALETTE.teal; ctx.font = "11px Arial";
+        ctx.fillText("店均 " + metricFmt(mean), xMean + 4, chartArea.top + 12);
+        ctx.strokeStyle = PALETTE.gold;
+        ctx.beginPath(); ctx.moveTo(xMed, chartArea.top + 18); ctx.lineTo(xMed, chartArea.bottom); ctx.stroke();
+        ctx.fillStyle = PALETTE.gold;
+        ctx.fillText("中位数 " + metricFmt(median), xMed + 4, chartArea.top + 30);
+        ctx.restore();
+      }
+    }, {
+      id:"barLabels",
+      afterDatasetsDraw(c) {
+        const meta = c.getDatasetMeta(0);
+        const {ctx} = c;
+        ctx.save(); ctx.font = "11px Arial"; ctx.fillStyle = "#1F2937"; ctx.textBaseline = "middle";
+        meta.data.forEach((bar, i) => {
+          const s = arr[i];
+          const pct = sysTotal ? s.total_view / sysTotal * 100 : 0;
+          ctx.fillText(`${metricFmt(s.total_view)} · ${fmtPctU(pct)}`, bar.x + 6, bar.y);
+        });
+        ctx.restore();
+      }
+    }]
+  });
+  const parts = [];
+  if (state.metric === "intensity")
+    parts.push("强度口径：每千笔订单产生的过期销毁 mL；销量数据来自 t_order_store_fact，cycle_type=hour 汇总。");
+  if (state.metric === "ml" || state.metric === "usd")
+    parts.push("绝对量口径会受门店开业时间影响（新店活跃月少）；切换至「损耗强度」可看销量平准化后的对比。");
+  document.getElementById("rankCaveat").textContent = parts.join(" ");
+}
+
+function renderPareto(stores) {
+  const sorted = stores.slice().sort((a,b)=>b.total_view - a.total_view);
+  const total = sorted.reduce((a,s)=>a+s.total_view, 0) || 1;
+  const labels = sorted.map(s=>s.store_name);
+  const bars = sorted.map(s=>s.total_view);
+  let cum = 0; const line = sorted.map(s => { cum += s.total_view; return cum/total*100; });
+  if (chartPareto) chartPareto.destroy();
+  chartPareto = new Chart(document.getElementById("chartPareto"), {
+    data: { labels, datasets: [
+      { type:"bar",  label: metricLabel(), data: bars, backgroundColor: PALETTE.primary, yAxisID:"y", borderRadius:4 },
+      { type:"line", label:"累计占比%", data: line, borderColor: PALETTE.gold, backgroundColor: PALETTE.gold, yAxisID:"y2", tension:.2, pointRadius:3 }
+    ]},
+    options: { maintainAspectRatio:false,
+      plugins: { legend:{position:"top"},
+        tooltip: { callbacks: { label: ctx => ctx.dataset.yAxisID === "y2"
+          ? `累计 ${ctx.parsed.y.toFixed(1)}%` : metricFmt(ctx.parsed.y) }}
+      },
+      scales: {
+        y:  { position:"left",  beginAtZero:true, ticks:{ callback: v => v.toLocaleString() } },
+        y2: { position:"right", beginAtZero:true, max:100, ticks:{ callback: v => v+"%" }, grid:{display:false} }
+      }
+    },
+    plugins: [{
+      id:"p80",
+      afterDraw(c) {
+        const {ctx, chartArea, scales} = c;
+        if (!chartArea || !scales.y2) return;
+        const y = scales.y2.getPixelForValue(80);
+        ctx.save(); ctx.setLineDash([4,4]); ctx.strokeStyle = PALETTE.red;
+        ctx.beginPath(); ctx.moveTo(chartArea.left, y); ctx.lineTo(chartArea.right, y); ctx.stroke();
+        ctx.fillStyle = PALETTE.red; ctx.font = "11px Arial";
+        ctx.fillText("80%", chartArea.left + 4, y - 4);
+        ctx.restore();
+      }
+    }]
+  });
+}
+
+function renderSpecMix(months) {
+  // Stacked bar of each store by spec. Only meaningful when state.spec="ALL".
+  // We always render it (when not ALL it just shows the single spec).
+  // Use mL by default; switch to USD if metric is usd.
+  const useUsd = state.metric === "usd";
+  const stores = DATA.stores_all.slice().sort((a,b)=>b.total_loss_ml - a.total_loss_ml);
+  const labels = stores.map(s => s.store_name);
+  const specList = DATA.meta.specs.filter(sp => (DATA.stores_by_spec[sp.mid]||[]).length > 0);
+  const datasets = specList.map(sp => ({
+    label: sp.label_cn,
+    backgroundColor: SPEC_COLORS[sp.mid] || PALETTE.primary,
+    data: stores.map(s => {
+      const b = s.spec_breakdown && s.spec_breakdown[sp.mid];
+      if (!b) return 0;
+      return useUsd ? b.usd : b.ml;
+    }),
+  }));
+  if (chartSpecMix) chartSpecMix.destroy();
+  chartSpecMix = new Chart(document.getElementById("chartSpecMix"), {
+    type: "bar",
+    data: { labels, datasets },
+    options: { indexAxis:"y", maintainAspectRatio:false,
+      plugins: { legend: { position: "top" },
+        tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${useUsd ? fmtUsd(ctx.parsed.x) : fmtN(ctx.parsed.x,0)+' mL'}` } }
+      },
+      scales: {
+        x: { stacked:true, ticks:{ callback: v => v.toLocaleString() } },
+        y: { stacked:true, grid:{ display:false } }
+      }
+    }
+  });
+}
+
+let leagueSort = { key: "total_view", dir: -1 };
+function renderLeague(months, stores) {
+  const tbl = document.getElementById("tblLeague");
+  const sysTotal = stores.reduce((a,s)=>a + s.total_view, 0) || 1;
+  const totals = stores.map(s=>s.total_view).sort((a,b)=>a-b);
+  const median = totals.length ? totals[Math.floor((totals.length-1)/2)] : 0;
+  const mean = stores.length ? sysTotal/stores.length : 0;
+  const arr = stores.slice();
+  arr.sort((a,b) => {
+    const ka = a[leagueSort.key], kb = b[leagueSort.key];
+    const va = (ka==null) ? -Infinity : ka;
+    const vb = (kb==null) ? -Infinity : kb;
+    if (va < vb) return -1 * leagueSort.dir;
+    if (va > vb) return  1 * leagueSort.dir;
+    return 0;
+  });
+  const hdr = [
+    ["rank","排名"], ["store_name","门店"], ["area","区域"],
+    ["total_view",metricLabel()], ["share","占系统%"],
+    ["total_loss_usd","累计 USD"], ["intensity_total","总强度"],
+    ["active_view","活跃月"],
+    ["spark","趋势"], ["latest_mom_view","最新月环比"], ["status","状态"],
+  ];
+  const sortKeyMap = { rank:"rank", store_name:"store_name", area:"area",
+    total_view:"total_view", share:"total_view",
+    total_loss_usd:"total_loss_usd", intensity_total:"intensity_total",
+    active_view:"active_view",
+    latest_mom_view:"latest_mom_view", status:"status", spark:"total_view" };
+  tbl.innerHTML = `
+    <thead><tr>${hdr.map(h => `<th data-k="${h[0]}">${h[1]}</th>`).join("")}</tr></thead>
+    <tbody>${arr.map(s => {
+      const share = s.total_view/sysTotal*100;
+      const cls = s.status === "异常" ? "outlier" : (s.status === "需关注" ? "attn" : "");
+      const pcls = STATUS_CLASS[s.status];
+      const intensityStr = s.intensity_total == null ? "—" : fmtN(s.intensity_total, 1);
+      return `<tr class="${cls}" data-dk="${storeKey(s)}">
+        <td>${s.rank}</td>
+        <td>${s.store_name}</td>
+        <td>${s.area}</td>
+        <td>${metricFmt(s.total_view)}</td>
+        <td>${fmtPctU(share)}</td>
+        <td>${fmtUsd(s.total_loss_usd)}</td>
+        <td>${intensityStr}</td>
+        <td>${s.active_view}</td>
+        <td>${sparkline(s.monthly_view)}</td>
+        <td style="color:${(s.latest_mom_view??0)>=0?PALETTE.red:PALETTE.green}">${fmtPct(s.latest_mom_view)}</td>
+        <td><span class="status-pill ${pcls}">${s.status}</span></td>
+      </tr>`;
+    }).join("")}</tbody>`;
+  tbl.querySelectorAll("th").forEach(th => {
+    th.onclick = () => {
+      const target = sortKeyMap[th.dataset.k] || "total_view";
+      if (leagueSort.key === target) leagueSort.dir *= -1;
+      else { leagueSort.key = target; leagueSort.dir = (typeof arr[0]?.[target] === "number") ? -1 : 1; }
+      renderLeague(months, stores);
+    };
+  });
+  tbl.querySelectorAll("tbody tr").forEach(tr => {
+    tr.onclick = () => {
+      state.selectedStore = tr.dataset.dk;
+      document.getElementById("fStore").value = tr.dataset.dk;
+      render();
+      document.getElementById("secDrill").scrollIntoView({behavior:"smooth"});
+    };
+  });
+}
+
+function sparkline(values) {
+  const w = 110, h = 24, pad = 2;
+  if (!values.length) return "";
+  const max = Math.max(...values), min = Math.min(...values);
+  const span = max - min || 1;
+  const pts = values.map((v, i) => {
+    const x = pad + (i * (w - 2*pad)) / Math.max(values.length - 1, 1);
+    const y = h - pad - ((v - min) / span) * (h - 2*pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  return `<svg class="sparkline" width="${w}" height="${h}">
+    <polyline points="${pts}" fill="none" stroke="${PALETTE.primary}" stroke-width="1.5"/>
+  </svg>`;
+}
+
+function renderTrend(months, stores) {
+  if (chartTrend) chartTrend.destroy();
+  const sysSeries = months.map(m => stores.reduce((a,s)=>a + (monthlyArr(s)[DATA.meta.months.indexOf(m)]||0), 0));
+  const meanSeries = sysSeries.map(v => stores.length ? v / stores.length : 0);
+  const datasets = [
+    { label:"系统合计", data: sysSeries, borderColor: PALETTE.navy, backgroundColor: PALETTE.navy,
+      borderWidth:3, tension:.25, pointRadius:4 },
+    { label:"店均参考", data: meanSeries, borderColor: PALETTE.teal, backgroundColor: "rgba(0,165,165,.10)",
+      borderDash:[6,4], fill:true, tension:.25, pointRadius:0 },
+  ];
+  stores.forEach((s, i) => {
+    const view = months.map(m => monthlyArr(s)[DATA.meta.months.indexOf(m)] || 0);
+    datasets.push({
+      label: s.store_name, data: view,
+      borderColor: hueColor(i), backgroundColor: hueColor(i),
+      borderWidth: state.selectedStore === storeKey(s) ? 3 : 1.2,
+      tension:.25, pointRadius: state.selectedStore === storeKey(s) ? 4 : 2,
+      hidden: state.selectedStore && state.selectedStore !== storeKey(s) && stores.length > 1,
+    });
+  });
+  chartTrend = new Chart(document.getElementById("chartTrend"), {
+    type: "line",
+    data: { labels: months, datasets },
+    options: { maintainAspectRatio:false,
+      plugins: { legend:{ position:"top", labels:{ boxWidth:14, font:{ size:11 } } },
+        tooltip:{ callbacks:{ label: ctx => `${ctx.dataset.label}: ${metricFmt(ctx.parsed.y)}` } } },
+      scales: { y:{ beginAtZero:true, ticks:{ callback: v => v.toLocaleString() } } }
+    }
+  });
+}
+function hueColor(i) {
+  const palette = [PALETTE.primary, PALETTE.gold, PALETTE.red, PALETTE.green, PALETTE.amber,
+                   "#8E44AD","#16A085","#2C3E50","#D35400","#3498DB","#9B59B6","#1ABC9C",
+                   "#F39C12","#34495E","#E91E63","#795548","#607D8B","#FF5722","#009688"];
+  return palette[i % palette.length];
+}
+
+function renderHeat(months, stores) {
+  const wrap = document.getElementById("heatWrap");
+  const cells = stores.flatMap(s => months.map(m => monthlyArr(s)[DATA.meta.months.indexOf(m)] || 0));
+  const maxV = Math.max(...cells, 1);
+  const cellColor = v => {
+    if (v === 0) return "#FAFBFE";
+    const t = v / maxV;
+    const r = Math.round(234 + (3 - 234) * t);
+    const g = Math.round(242 + (101 - 242) * t);
+    const b = Math.round(251 + (192 - 251) * t);
+    return `rgb(${r},${g},${b})`;
+  };
+  const colTotals = months.map(m => stores.reduce((a,s)=>a + (monthlyArr(s)[DATA.meta.months.indexOf(m)] || 0), 0));
+  const grand = colTotals.reduce((a,b)=>a+b, 0);
+  const sorted = stores.slice().sort((a,b)=>b.total_view - a.total_view);
+  let html = `<table class="heatmap"><thead><tr><th>门店</th>${months.map(m=>`<th>${m}</th>`).join("")}<th>总计</th></tr></thead><tbody>`;
+  sorted.forEach(s => {
+    const row = months.map(m => monthlyArr(s)[DATA.meta.months.indexOf(m)] || 0);
+    const rowT = row.reduce((a,b)=>a+b, 0);
+    html += `<tr><td>${s.store_name}</td>${row.map(v =>
+      `<td style="background:${cellColor(v)}; color:${v/maxV>.55?'#fff':'#1F2937'}">${v===0?'·':metricFmt(v)}</td>`).join("")}<td class="total">${metricFmt(rowT)}</td></tr>`;
+  });
+  html += `<tr class="total"><td>合计</td>${colTotals.map(v=>`<td>${metricFmt(v)}</td>`).join("")}<td>${metricFmt(grand)}</td></tr>`;
+  html += `</tbody></table>`;
+  wrap.innerHTML = html;
+}
+
+function renderNonStores(months) {
+  const sec = document.getElementById("secNonStore");
+  if (!DATA.non_stores || !DATA.non_stores.length) { sec.style.display = "none"; return; }
+  let html = `<table class="league"><thead><tr><th>部门名称</th><th>dept_id</th><th>报损量 (mL)</th>
+    <th>报损金额 (USD)</th><th>记录数</th><th>首月</th><th>末月</th><th>主操作人</th></tr></thead><tbody>`;
+  DATA.non_stores.forEach(s => {
+    html += `<tr><td>${s.store_name}</td><td>${s.dept_id}</td><td>${fmtN(s.total_loss_ml,0)}</td>
+      <td>${fmtUsd(s.total_loss_usd)}</td><td>${s.record_count}</td>
+      <td>${s.first_month||"—"}</td><td>${s.last_active_month||"—"}</td>
+      <td>${s.top_operator||"—"}</td></tr>`;
+  });
+  html += `</tbody></table>`;
+  document.getElementById("nonStoreWrap").innerHTML = html;
+}
+
+function renderDrill(months, stores) {
+  const dk = state.selectedStore;
+  const target = dk ? stores.find(s => storeKey(s) === dk)
+                    : stores.slice().sort((a,b)=>b.total_view - a.total_view)[0];
+  document.getElementById("drillStoreLabel").textContent = target ? `${target.store_name} (${target.shop_no})` : "—";
+  if (!target) return;
+  const sysTotal = stores.reduce((a,s)=>a+s.total_view, 0) || 1;
+  const mean = stores.length ? sysTotal / stores.length : 0;
+  let worstM = "—", worstV = 0;
+  target.monthly_view.forEach((v, i) => { if (v > worstV) { worstV = v; worstM = months[i]; } });
+  const k = [
+    {label:"总" + metricLabel(), value: metricFmt(target.total_view), sub:`活跃 ${target.active_view} 月`},
+    {label:"占系统%", value: fmtPctU(sysTotal ? target.total_view/sysTotal*100 : 0), sub:`排名 #${target.rank}`},
+    {label:"较店均", value: fmtPct(mean ? (target.total_view-mean)/mean*100 : 0), sub:`店均 ${metricFmt(mean)}`},
+    {label:"累计 USD", value: fmtUsd(target.total_loss_usd), sub:"全部规格"},
+    {label:"总订单", value: fmtN(target.total_sales,0), sub:"窗口期总订单数"},
+    {label:"损耗强度", value: target.intensity_total==null?"—":fmtN(target.intensity_total,1), sub:"mL/千单"},
+    {label:"最新月", value: metricFmt(target.latest_view), sub: months[target.last_active_idx_view] || "—"},
+    {label:"最新月环比", value: fmtPct(target.latest_mom_view), sub:"较上一有数据月"},
+    {label:"最糟月份", value: worstM, sub: metricFmt(worstV)},
+  ];
+  document.getElementById("drillKpis").innerHTML = k.map(c => `
+    <div class="kpi">
+      <div class="label">${c.label}</div>
+      <div class="value">${c.value}</div>
+      <div class="sub">${c.sub}</div>
+    </div>`).join("");
+  document.getElementById("drillNote").textContent =
+    `主操作人：${target.top_operator || "—"}（占该店 ${fmtPctU(target.top_operator_share_pct||0)}）· z=${(target.z_score??0).toFixed(2)} · 百分位 ${fmtN(target.percentile,0)}`;
+
+  if (chartDrillMonthly) chartDrillMonthly.destroy();
+  chartDrillMonthly = new Chart(document.getElementById("chartDrillMonthly"), {
+    type: "bar",
+    data: { labels: months, datasets: [
+      { label: metricLabel(), data: target.monthly_view, backgroundColor: PALETTE.primary, borderRadius:4 }
+    ]},
+    options: { maintainAspectRatio:false,
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: ctx => metricFmt(ctx.parsed.y) }}},
+      scales: { y:{ beginAtZero:true, ticks:{ callback: v => v.toLocaleString() } } }
+    }
+  });
+
+  // spec breakdown donut — use ALL aggregate spec_breakdown
+  const all = DATA.stores_all.find(s => storeKey(s) === storeKey(target));
+  if (chartDrillSpec) chartDrillSpec.destroy();
+  if (all && all.spec_breakdown) {
+    const useUsd = state.metric === "usd";
+    const entries = Object.entries(all.spec_breakdown);
+    const labels = entries.map(([k]) => DATA.meta.specs.find(sp=>sp.mid===k)?.label_cn || k);
+    const dataVals = entries.map(([_, v]) => useUsd ? v.usd : v.ml);
+    const colors = entries.map(([k]) => SPEC_COLORS[k] || PALETTE.primary);
+    chartDrillSpec = new Chart(document.getElementById("chartDrillSpec"), {
+      type: "doughnut",
+      data: { labels, datasets: [{ data: dataVals, backgroundColor: colors }] },
+      options: { maintainAspectRatio:false,
+        plugins:{ legend:{ position:"right", labels:{font:{size:11}} },
+          tooltip:{ callbacks:{ label: ctx => `${ctx.label}: ${useUsd ? fmtUsd(ctx.parsed) : fmtN(ctx.parsed,0)+' mL'}` } } }
+      }
+    });
+  }
+
+  const ops = target.operators || [];
+  document.getElementById("tblOperators").innerHTML = `
+    <thead><tr><th>操作人</th><th>记录数</th><th>报损量 (mL)</th><th>占该店%</th></tr></thead>
+    <tbody>${ops.map(o => `
+      <tr><td>${o.name}</td><td>${o.count}</td><td>${fmtN(o.qty,0)}</td><td>${fmtPctU(o.share_pct)}</td></tr>
+    `).join("")}</tbody>`;
+}
+
+function exportCurrentCsv() {
+  const months = activeMonths();
+  const stores = sortStores(activeStoresAll().map(s => storeView(s, months)));
+  const headers = ["rank","dept_id","shop_no","store_name","area",
+                   `total_${state.metric}`, "total_loss_ml", "total_loss_usd", "total_sales", "intensity_per_1k",
+                   "active_months","record_count","status","spec_scope", ...months];
+  const sysTotal = stores.reduce((a,s)=>a+s.total_view, 0) || 1;
+  const rows = stores.map((s,i) => {
+    const base = [i+1, s.dept_id, s.shop_no, s.store_name, s.area,
+                  s.total_view.toFixed(2),
+                  s.total_loss_ml.toFixed(2),
+                  s.total_loss_usd.toFixed(2),
+                  s.total_sales,
+                  s.intensity_total == null ? "" : s.intensity_total.toFixed(4),
+                  s.active_view, s.record_count, s.status, state.spec];
+    return base.concat(s.monthly_view.map(v => v.toFixed(2)));
+  });
+  const csv = [headers, ...rows].map(r => r.map(c => {
+    const x = String(c);
+    return /[,"\n]/.test(x) ? `"${x.replace(/"/g,'""')}"` : x;
+  }).join(",")).join("\n");
+  const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = `spoilage_${state.spec}_${state.metric}_${state.monthFrom}_${state.monthTo}.csv`;
+  a.click(); URL.revokeObjectURL(url);
+}
+
+function render() {
+  const months = activeMonths();
+  let stores = activeStoresAll().map(s => storeView(s, months));
+  stores = sortStores(stores);
+  const ranked = stores.slice().sort((a,b)=>b.total_view - a.total_view);
+  ranked.forEach((s, i) => { s.rank = i + 1; });
+  renderKpis(months, stores);
+  renderAlerts(stores);
+  renderRank(stores);
+  renderPareto(stores);
+  renderSpecMix(months);
+  renderLeague(months, stores);
+  renderTrend(months, stores);
+  renderHeat(months, stores);
+  renderNonStores(months);
+  renderDrill(months, stores);
+}
+
+// header / footer
+document.getElementById("hdrSpec").textContent = "规格：" + DATA.meta.specs.filter(sp => (DATA.stores_by_spec[sp.mid]||[]).length>0).map(sp=>sp.label_cn).join(" / ");
+document.getElementById("hdrPeriod").textContent = `周期：${DATA.meta.period_start} → ${DATA.meta.period_end}`;
+document.getElementById("tzBadge").textContent = "时区：" + DATA.meta.timezone;
+document.getElementById("ftrPeriod").textContent = `${DATA.meta.period_start} → ${DATA.meta.period_end}`;
+document.getElementById("ftrGen").textContent = DATA.meta.generated;
+document.getElementById("ftrTz").textContent = DATA.meta.timezone;
+document.getElementById("ftrDst").textContent = DATA.meta.dst_drift_count;
+document.getElementById("ftrRecon").textContent = DATA.meta.reconciliation;
+if (DATA.meta.build_meta) {
+  const bm = DATA.meta.build_meta;
+  document.getElementById("ftrBuild").textContent =
+    `最近一次构建 ${bm.build_time} · commit ${(bm.git_commit||"").slice(0,8)} · 输入行数 ${bm.rows}`;
+}
+document.getElementById("reconPill").textContent = `对账 ${DATA.meta.reconciliation}`;
+document.getElementById("reconPill").className = "pill " + (DATA.meta.reconciliation === "PASS" ? "pass" : "fail");
+
+initToolbar();
+render();
+</script>
+</body>
+</html>

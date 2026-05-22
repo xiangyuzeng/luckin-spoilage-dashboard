@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.env
+.venv/
+
+# Transient build outputs — only docs/ is committed.
+output/
+
+# Raw data cache — currently bootstrapped from a Claude Code session; may
+# contain larger raw extracts. Don't ship them via git.
+cache/
