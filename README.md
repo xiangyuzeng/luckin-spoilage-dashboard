@@ -6,7 +6,11 @@ milk across Luckin USA stores. Data is pulled from the SCM source-of-truth
 with store master, sales orders, and unit cost, then rendered as a self-contained
 HTML file.
 
-**Live URL:** https://xiangyuzeng.github.io/luckin-spoilage-dashboard/ *(after Pages is enabled)*
+**Live URL:** https://xiangyuzeng.github.io/luckin-spoilage-dashboard/
+
+**Repo:** https://github.com/xiangyuzeng/luckin-spoilage-dashboard
+
+**Data files:** https://xiangyuzeng.github.io/luckin-spoilage-dashboard/data/
 
 ## What's in the dashboard
 
