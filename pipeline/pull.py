@@ -1,48 +1,79 @@
-"""pipeline/pull.py — refresh cache/ from SCM source-of-truth (TODO).
+"""pipeline/pull.py — refresh cache/raw/batch_*.json + cache/spec_metadata.json from SCM.
 
-This is a STUB. To make daily auto-refresh actually pick up new data, implement
-the queries below against luckyus_scm_shopstock.t_shop_spec_stock_change_record
-and write the results to cache/spec_<spec_mid>.csv in the format expected by
-build_v2.py.
+The 2026-05 expansion changed this file from a stub to a runbook. It is designed
+to be executed from a Claude Code session that has the mcp-db-gateway MCP server
+attached (the workstation default). The mcp-db-gateway gives `mysql_query` access
+to all luckyus_* databases; this script prints the exact queries to run.
 
-Implementation paths (pick one):
+Why not pure-Python pymysql? Because the on-prem MySQL gateway sits behind the
+office VPN and we have not yet onboarded a Secrets Manager entry for the read
+credential. Adding that is left to a future change; the cron job that calls this
+script today is **not** unattended — it's the Claude Code session described in
+docs/runbooks/spoilage_refresh.md.
 
-  A) Direct MySQL via pymysql + AWS Secrets Manager (the luckin-ops-dashboard
-     pattern). Requires the cron box to have IAM permission to GetSecretValue
-     and the credentials secret name (e.g. luckyus/scm-shopstock/readonly).
+USAGE (from a Claude Code session):
 
-  B) Call the on-prem mcp-db-gateway at http://10.238.3.43:8080 over HTTP.
-     Requires figuring out the gateway's non-SSE query endpoint.
+    1. List all SKUs we track:
+         from pipeline.sku_catalog import SKU_CATALOG
+         all_skus = list(SKU_CATALOG.keys())
 
-  C) Run this script inside a scheduled Claude Code agent (see /schedule skill)
-     so the MCP tools are available; the agent writes the cache files and
-     commits via /push-report.
+    2. Pull spec metadata (cost + ratios + unit) for every SKU.
+       Run these two queries via the mcp-db-gateway mysql_query tool:
 
-For each spec_mid in ("GS07788-01", "GS07786-01", "GS07785-01", "GS07786-02"):
+         A) -- ratios + unit --
+            SELECT mid, name, use_unit_mid, dly_use_ratio, cg_dly_ratio, status
+            FROM   luckyus_scm_shopstock.t_mdm_goods_spec
+            WHERE  tenant='LKUS' AND mid IN (<all_skus>);
 
-  SELECT spec_mid, operator_dept_id, operator_dept_name, operator_name,
-         total_adjust_num, operated_time
-  FROM   luckyus_scm_shopstock.t_shop_spec_stock_change_record
-  WHERE  tenant = 'LKUS'
-    AND  specific_reason_code = '015'
-    AND  spec_mid = <spec_mid>
-  ORDER BY operated_time;
+         B) -- weighted-avg cost since 2025-01-01 --
+            SELECT spec_mid,
+                   ROUND(AVG(COALESCE(adjust_spec_cost_amount, spec_cost_amount)), 4)
+                     AS avg_cost,
+                   COUNT(*) AS receipts, MAX(receive_time) AS last_receive
+            FROM   luckyus_scm_purchase.t_goods_spec_cost_detail
+            WHERE  tenant='LKUS' AND spec_mid IN (<all_skus>)
+              AND  receive_time >= '2025-01-01'
+            GROUP  BY spec_mid;
 
-Sales reference (also needs refresh — currently hardcoded in build_v2.py):
+       Join A + B by spec_mid and write to cache/spec_metadata.json (see
+       existing file for schema).
 
-  SELECT shop_id, DATE_FORMAT(local_begin_date, '%Y-%m') AS month,
-         SUM(total_order_quantity) AS orders
-  FROM   luckyus_sales_order.t_order_store_fact
-  WHERE  tenant = 'LKUS' AND cycle_type = 3
-    AND  local_begin_date >= '2025-07-01'
-  GROUP BY shop_id, month
-  ORDER BY shop_id, month;
+    3. Pull spoilage records. To stay under the MCP gateway's response cap,
+       split the SKU list into batches of ~4 large SKUs (>1000 rows each) and
+       1 batch for all the smaller tails. Run:
 
-Once implemented, refresh.sh step 1 should call this script and bail on non-zero
-exit. Until then, the cache directory is bootstrapped from a Claude Code session
-and the cron will keep re-publishing the same data daily.
+         SELECT spec_mid, operator_dept_id, operator_dept_name, operator_name,
+                total_adjust_num, operated_time
+         FROM   luckyus_scm_shopstock.t_shop_spec_stock_change_record
+         WHERE  tenant='LKUS' AND specific_reason_code='015'
+           AND  spec_mid IN (<batch>)
+         ORDER  BY spec_mid, operated_time;
+
+       Each batched response will be saved to a tool-result file by the gateway.
+       Copy those files to cache/raw/batch_NN.json (build_v2.py reads every
+       cache/raw/batch_*.json glob).
+
+    4. Re-run build pipeline:
+         python3 pipeline/build_v2.py
+         python3 pipeline/build_dashboard.py
+
+Sales reference (currently hardcoded as SALES in build_v2.py) is independent —
+update it via:
+
+    SELECT shop_id, DATE_FORMAT(local_begin_date, '%Y-%m') AS month,
+           SUM(total_order_quantity) AS orders
+    FROM   luckyus_sales_order.t_order_store_fact
+    WHERE  tenant='LKUS' AND cycle_type=3 AND local_begin_date >= '2025-07-01'
+    GROUP  BY shop_id, month
+    ORDER  BY shop_id, month;
+
+FUTURE: When the read credential is in AWS Secrets Manager, replace step 2 + 3
+with a pymysql client that writes the same cache files. The build pipeline does
+not need to change.
 """
 import sys
-print("ERROR: pipeline/pull.py is not yet implemented — see docstring for paths.",
+print("pipeline/pull.py is a runbook, not an executable. Read the docstring.",
+      file=sys.stderr)
+print("Run the documented queries from a Claude Code session with mcp-db-gateway attached.",
       file=sys.stderr)
 sys.exit(2)

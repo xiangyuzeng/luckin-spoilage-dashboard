@@ -30,10 +30,10 @@ mkdir -p "$REPO_ROOT/output" "$REPO_ROOT/docs/data"
 echo "=== $(date -u +%FT%TZ) refresh start ===" | tee -a "$LOG"
 
 # Step 1 — refresh raw data cache.
-# TODO: implement pipeline/pull.py to query SCM DB directly via pymysql + Secrets Manager.
-# For now we assume cache/spec_*.csv|.json is up-to-date (bootstrapped from MCP session).
-if [ ! -f cache/spec_GS07788-01.csv ]; then
-  echo "ERROR: cache/spec_GS07788-01.csv missing — pipeline/pull.py not yet implemented" | tee -a "$LOG"
+# The mcp-db-gateway puller is documented in pipeline/pull.py (runbook). It writes
+# cache/raw/batch_*.json + cache/spec_metadata.json from a Claude Code session.
+if [ ! -f cache/spec_metadata.json ] || ! ls cache/raw/batch_*.json >/dev/null 2>&1; then
+  echo "ERROR: cache/spec_metadata.json or cache/raw/batch_*.json missing — run pipeline/pull.py runbook" | tee -a "$LOG"
   exit 1
 fi
 

@@ -1,14 +1,14 @@
-"""V2 dashboard builder — consumes /app/output/dashboard_payload.json.
+"""V3 dashboard builder — consumes output/dashboard_payload.json (44-SKU edition).
 
-New capabilities vs v1:
-- Spec selector (4 milk variants + ALL aggregate).
-- Metric toggle: mL / USD / 损耗强度 (mL per 1k orders).
-- Multi-spec stacked breakdown bar.
-- Sales intensity now first-class (no longer disabled).
-- DST-aware: payload was bucketed via zoneinfo America/New_York; we surface that in the header.
+New vs v2:
+- 44 SKUs across 9 categories (was 4 milk variants).
+- Spec dropdown grouped via <optgroup>; SKUs with zero records appear greyed.
+- ALL view: USD-only metric, stacked by category (9 colors), not by SKU.
+- Per-spec view: native unit (mL / g / 个) from payload meta.
+- Category-level drilling: a "category" pseudo-spec rolls up SKUs within a cat.
+- Per-category color palette (HSL family per category).
 """
 import json, os
-from datetime import datetime
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 OUT_DIR = os.path.join(REPO_ROOT, "output")
@@ -17,9 +17,7 @@ DOCS_DATA = os.path.join(REPO_ROOT, "docs", "data")
 with open(os.path.join(OUT_DIR, "dashboard_payload.json"), encoding="utf-8") as f:
     payload = json.load(f)
 
-# Inject build_meta into payload so the dashboard footer can show freshness.
-# build_meta.json is written by pipeline/refresh.sh after this script runs;
-# read it here if a previous build deposited one (best-effort, optional).
+# Best-effort build_meta injection (refresh.sh writes this after build).
 _build_meta_path = os.path.join(DOCS_DATA, "build_meta.json")
 if os.path.exists(_build_meta_path):
     try:
@@ -32,7 +30,7 @@ HTML_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=1200,initial-scale=1">
-<title>门店脱脂奶过期销毁损耗分析看板</title>
+<title>门店物料过期销毁损耗分析看板</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
   :root {
@@ -61,6 +59,7 @@ HTML_TEMPLATE = r"""<!doctype html>
   .toolbar button:hover { filter:brightness(1.05); }
   .toolbar .group { display:flex; gap:6px; align-items:center; padding:4px 8px; background:var(--bg); border-radius:6px; }
   .toolbar .group label { margin-right:0; }
+  .toolbar select option:disabled { color:#9aa0a6; font-style:italic; }
 
   main { padding:22px 28px 60px; }
   section { background:var(--card); border-radius:12px; box-shadow:0 2px 6px rgba(0,0,0,.04); padding:20px 22px; margin-bottom:22px; }
@@ -85,6 +84,10 @@ HTML_TEMPLATE = r"""<!doctype html>
 
   .chart-wrap { position:relative; height:380px; }
   .chart-wrap.tall { height:560px; }
+
+  .empty-state { padding:60px 20px; text-align:center; color:var(--muted); font-size:14px;
+    background:repeating-linear-gradient(45deg,#FAFBFE,#FAFBFE 10px,#F2F4F8 10px,#F2F4F8 20px);
+    border-radius:8px; border:1px dashed var(--line); }
 
   table.league { width:100%; border-collapse:collapse; font-size:13px; }
   table.league th, table.league td { padding:10px 8px; border-bottom:1px solid var(--line); text-align:right; }
@@ -137,7 +140,7 @@ HTML_TEMPLATE = r"""<!doctype html>
 <body>
 <header class="bar">
   <div>
-    <h1>Luckin USA 牛奶过期销毁损耗分析看板</h1>
+    <h1>Luckin USA 物料过期销毁损耗分析看板</h1>
     <div class="sub">
       <span id="hdrSpec"></span> · <span id="hdrPeriod"></span> ·
       <span class="pill info" id="tzBadge"></span>
@@ -156,9 +159,9 @@ HTML_TEMPLATE = r"""<!doctype html>
   <div class="group">
     <label>指标</label>
     <select id="fMetric">
-      <option value="ml">报损量 (mL)</option>
       <option value="usd">报损金额 (USD)</option>
-      <option value="intensity">损耗强度 (mL / 1k 单)</option>
+      <option value="qty">报损量 (单位随规格)</option>
+      <option value="intensity">损耗强度 (USD / 1k 单)</option>
     </select>
   </div>
   <div><label>月份起</label><select id="fMonthFrom"></select></div>
@@ -186,30 +189,30 @@ HTML_TEMPLATE = r"""<!doctype html>
   </section>
 
   <section id="secRank"><h2>门店损耗排名 <span class="tag">主图</span></h2>
-    <div class="chart-wrap tall"><canvas id="chartRank"></canvas></div>
+    <div id="rankBody"><div class="chart-wrap tall"><canvas id="chartRank"></canvas></div></div>
     <div class="note" id="rankCaveat"></div>
   </section>
 
   <section id="secPareto"><h2>门店损耗帕累托（累计占比）</h2>
-    <div class="chart-wrap"><canvas id="chartPareto"></canvas></div>
+    <div id="paretoBody"><div class="chart-wrap"><canvas id="chartPareto"></canvas></div></div>
   </section>
 
-  <section id="secSpecMix"><h2>门店 × 规格 构成</h2>
-    <div class="chart-wrap"><canvas id="chartSpecMix"></canvas></div>
-    <div class="note">堆叠条形图：每家门店的损耗按规格拆分（脱脂 / 全脂 / 减脂），帮助识别哪种牛奶产生的过期销毁更多。</div>
+  <section id="secSpecMix"><h2 id="specMixTitle">门店 × 品类 构成</h2>
+    <div id="specMixBody"><div class="chart-wrap"><canvas id="chartSpecMix"></canvas></div></div>
+    <div class="note" id="specMixNote">堆叠条形图：每家门店的 USD 损耗按品类（奶/咖啡豆/糖浆/烘焙/…）拆分，识别哪些品类驱动门店总损耗。选择单一规格时仅显示该规格的损耗。</div>
   </section>
 
   <section id="secLeague"><h2>门店对标榜单</h2>
-    <div style="overflow-x:auto"><table class="league" id="tblLeague"></table></div>
+    <div id="leagueBody" style="overflow-x:auto"><table class="league" id="tblLeague"></table></div>
   </section>
 
   <section id="secTrend"><h2>月度趋势</h2>
-    <div class="chart-wrap"><canvas id="chartTrend"></canvas></div>
+    <div id="trendBody"><div class="chart-wrap"><canvas id="chartTrend"></canvas></div></div>
   </section>
 
   <section id="secHeat"><h2>门店 × 月份 热力矩阵</h2>
-    <div style="overflow-x:auto" id="heatWrap"></div>
-    <div class="legend"><span>低</span><span class="swatch"></span><span>高（颜色越深表示报损量越大；·=该月未开业或为零）</span></div>
+    <div id="heatBody" style="overflow-x:auto"><div id="heatWrap"></div></div>
+    <div class="legend"><span>低</span><span class="swatch"></span><span>高（颜色越深表示损耗越大；·=该月未开业或为零）</span></div>
   </section>
 
   <section id="secNonStore"><h2>非门店调整记录 <span class="tag">参考</span></h2>
@@ -229,7 +232,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         <div class="chart-wrap" style="height:280px"><canvas id="chartDrillMonthly"></canvas></div>
       </div>
       <div class="panel">
-        <h3>规格构成</h3>
+        <h3 id="drillSpecTitle">品类构成</h3>
         <div class="chart-wrap" style="height:240px"><canvas id="chartDrillSpec"></canvas></div>
       </div>
       <div class="panel">
@@ -242,10 +245,11 @@ HTML_TEMPLATE = r"""<!doctype html>
 
 <footer>
   数据来源：直接读取 SCM 源库 <code>luckyus_scm_shopstock.t_shop_spec_stock_change_record</code>
-  （tenant=LKUS，specific_reason_code=015「过期销毁」）；门店主数据来自 <code>luckyus_opshop.t_shop_info</code>；
-  销量参考来自 <code>luckyus_sales_order.t_order_store_fact</code>（hourly→月汇总）；
-  单位成本来自 <code>luckyus_scm_purchase.t_goods_spec_cost_detail</code>。<br>
-  8th &amp; Broadway 的 Jan-Apr 2026 已与门店导出的 xlsx 文件逐月对账（差异 = 0）。<br>
+  （tenant=LKUS，specific_reason_code=015「过期销毁」）；
+  规格、单位、成本来自 <code>t_mdm_goods_spec</code> + <code>t_goods_spec_cost_detail</code>；
+  门店主数据来自 <code>luckyus_opshop.t_shop_info</code>；
+  销量参考来自 <code>luckyus_sales_order.t_order_store_fact</code>（hourly→月汇总）。<br>
+  说明：单位非统一（mL / g / 个），跨规格比较默认采用 USD 金额。<br>
   周期：<span id="ftrPeriod"></span> · 生成日期：<span id="ftrGen"></span> ·
   时区：<span id="ftrTz"></span> · DST drift: <span id="ftrDst"></span> 行 ·
   对账状态：<span id="ftrRecon"></span><br>
@@ -266,16 +270,43 @@ const PALETTE = { primary:"#0365C0", navy:"#1A365D", teal:"#00A5A5", gold:"#DCBD
                   red:"#C0392B", amber:"#E67E22", green:"#27AE60" };
 const STATUS_COLOR = {"异常":PALETTE.red, "需关注":PALETTE.amber, "正常":PALETTE.primary};
 const STATUS_CLASS = {"异常":"s-yc", "需关注":"s-xz", "正常":"s-zc"};
-const SPEC_COLORS = {
-  "GS07788-01": PALETTE.primary,
-  "GS07786-01": PALETTE.gold,
-  "GS07785-01": PALETTE.teal,
-  "GS07786-02": PALETTE.amber,
+
+// Category base hues (HSL). Within each category, SKUs get a lightness fan.
+const CATEGORY_HUE = {
+  dairy:     {h:210, s:65},   // blue family — milk
+  coffee:    {h: 25, s:55},   // brown family — coffee beans
+  bakery:    {h: 40, s:75},   // gold family — bakery
+  syrup:     {h:330, s:60},   // pink/magenta — syrups
+  sauce:     {h: 15, s:65},   // red-orange — sauces
+  powder:    {h:160, s:50},   // teal-green — powders
+  seasoning: {h:280, s:45},   // purple — seasoning
+  beverage:  {h:190, s:65},   // cyan — beverages
+  other:     {h:  0, s: 0},   // grey — other
 };
+
+// Per-spec color: hue from category, lightness fanned by SKU index within category.
+const SPEC_COLORS = (() => {
+  const out = {}; const byCat = {};
+  DATA.meta.specs.forEach(sp => {
+    (byCat[sp.cat] = byCat[sp.cat] || []).push(sp.mid);
+  });
+  Object.entries(byCat).forEach(([cat, list]) => {
+    const base = CATEGORY_HUE[cat] || CATEGORY_HUE.other;
+    list.forEach((mid, i) => {
+      const span = list.length > 1 ? (60 / (list.length - 1)) : 0;
+      const l = 35 + (i * span);  // 35% → 95% lightness fan
+      out[mid] = `hsl(${base.h}, ${base.s}%, ${Math.min(l, 70)}%)`;
+    });
+  });
+  return out;
+})();
+const CATEGORY_COLORS = Object.fromEntries(Object.entries(CATEGORY_HUE).map(([k,v]) => [k, `hsl(${v.h}, ${v.s}%, 45%)`]));
+
+const SPECS_BY_MID = Object.fromEntries(DATA.meta.specs.map(sp => [sp.mid, sp]));
 
 const state = {
   spec: "ALL",
-  metric: "ml",   // ml | usd | intensity
+  metric: "usd",
   monthFrom: DATA.meta.months[0],
   monthTo:   DATA.meta.months[DATA.meta.months.length - 1],
   selectedStore: null,
@@ -284,37 +315,91 @@ const state = {
 
 const storeKey = s => `${s.dept_id}|${s.shop_no}`;
 
-// pick which dataset to show (per-spec or aggregate)
-function activeStoresAll() {
-  return state.spec === "ALL" ? DATA.stores_all : (DATA.stores_by_spec[state.spec] || []);
+function currentSpec() {
+  if (state.spec === "ALL") return null;
+  if (state.spec.startsWith("CAT:")) return null;
+  return SPECS_BY_MID[state.spec] || null;
+}
+function currentCategory() {
+  return state.spec.startsWith("CAT:") ? state.spec.slice(4) : null;
 }
 
-// metric extractor: returns the right monthly array given current state
-function monthlyArr(s) {
-  if (state.metric === "usd") return s.monthly_usd;
-  if (state.metric === "intensity") return s.intensity_monthly || [];
-  return s.monthly_ml;
+// Pick dataset based on spec selection.
+function activeStoresAll() {
+  if (state.spec === "ALL") return DATA.stores_all;
+  if (state.spec.startsWith("CAT:")) {
+    const cat = state.spec.slice(4);
+    return DATA.stores_by_cat[cat] || [];
+  }
+  return DATA.stores_by_spec[state.spec] || [];
 }
+
+// If ALL view, only USD metric is meaningful.
+function effectiveMetric() {
+  if (state.spec === "ALL" || state.spec.startsWith("CAT:")) {
+    // qty doesn't apply (units mix); fall back to USD
+    return state.metric === "qty" ? "usd" : state.metric;
+  }
+  return state.metric;
+}
+
+function monthlyArr(s) {
+  const m = effectiveMetric();
+  if (m === "usd") return s.monthly_usd || [];
+  if (m === "intensity") return s.intensity_monthly || [];
+  return s.monthly_qty || s.monthly_usd || [];
+}
+function totalValue(s) {
+  const m = effectiveMetric();
+  if (m === "usd") return s.total_loss_usd || 0;
+  if (m === "intensity") return s.intensity_total || 0;
+  return s.total_loss_qty || s.total_loss_usd || 0;
+}
+
 function metricLabel() {
-  if (state.metric === "usd") return "报损金额 (USD)";
-  if (state.metric === "intensity") return "损耗强度 (mL/千单)";
-  return "报损量 (mL)";
+  const m = effectiveMetric();
+  if (m === "usd") return "报损金额 (USD)";
+  if (m === "intensity")
+    return state.spec === "ALL" || state.spec.startsWith("CAT:")
+      ? "损耗强度 (USD/千单)" : "损耗强度 (mL or g per 1k orders)";
+  const sp = currentSpec();
+  const u = sp?.unit_label || "qty";
+  return `报损量 (${u})`;
 }
 function metricFmt(v) {
   if (v == null || isNaN(v)) return "—";
-  if (state.metric === "usd") return fmtUsd(v);
-  if (state.metric === "intensity") return fmtN(v, 1);
+  const m = effectiveMetric();
+  if (m === "usd") return fmtUsd(v);
+  if (m === "intensity") return fmtN(v, 1);
   return fmtN(v, 0);
 }
 function metricUnit() {
-  return state.metric === "usd" ? "USD" : (state.metric === "intensity" ? "mL/千单" : "mL");
+  const m = effectiveMetric();
+  if (m === "usd") return "USD";
+  if (m === "intensity") return state.spec === "ALL" || state.spec.startsWith("CAT:") ? "USD/千单" : "qty/千单";
+  const sp = currentSpec();
+  return sp?.unit_label || "qty";
 }
 
 function initToolbar() {
   const fSpec = document.getElementById("fSpec");
-  fSpec.innerHTML = `<option value="ALL">全部规格（合计）</option>` +
-    DATA.meta.specs.filter(sp => (DATA.stores_by_spec[sp.mid] || []).length > 0)
-      .map(sp => `<option value="${sp.mid}">${sp.label_cn}（${sp.mid}）</option>`).join("");
+  // Grouped <optgroup> per category
+  const byCat = {};
+  DATA.meta.specs.forEach(sp => (byCat[sp.cat] = byCat[sp.cat] || []).push(sp));
+  let html = `<option value="ALL">全部规格（USD 合计）</option>`;
+  DATA.meta.categories.forEach(({id, label}) => {
+    const list = byCat[id] || [];
+    if (!list.length) return;
+    html += `<optgroup label="${label}（${list.length} 个）">`;
+    html += `<option value="CAT:${id}">▣ ${label} · 整品类合计</option>`;
+    list.forEach(sp => {
+      const empty = !sp.has_data;
+      const tag = empty ? "（暂无数据）" : "";
+      html += `<option value="${sp.mid}" ${empty ? "disabled" : ""}>${sp.label_cn}（${sp.mid}）${tag}</option>`;
+    });
+    html += `</optgroup>`;
+  });
+  fSpec.innerHTML = html;
   fSpec.value = state.spec;
   fSpec.onchange = () => { state.spec = fSpec.value; state.selectedStore = null;
     document.getElementById("fStore").value = ""; render(); };
@@ -385,6 +470,15 @@ function sortStores(stores) {
 
 let chartRank, chartPareto, chartSpecMix, chartTrend, chartDrillMonthly, chartDrillSpec;
 
+function showEmpty(targetSelector, html) {
+  const el = document.querySelector(targetSelector);
+  if (el) el.innerHTML = `<div class="empty-state">${html}</div>`;
+}
+function restoreCanvas(targetSelector, canvasHtml) {
+  const el = document.querySelector(targetSelector);
+  if (el && !el.querySelector("canvas")) el.innerHTML = canvasHtml;
+}
+
 function renderKpis(months, stores) {
   const sysTotal = stores.reduce((a,s)=>a + s.total_view, 0);
   const recCount = stores.reduce((a,s)=>a + s.record_count, 0);
@@ -396,9 +490,17 @@ function renderKpis(months, stores) {
     const prev = sysM[sysM.length - 2], cur = sysM[sysM.length - 1];
     if (prev) latestMom = (cur - prev) / prev * 100;
   }
-  const specLabel = state.spec === "ALL" ? "全部规格" : (DATA.meta.specs.find(sp=>sp.mid===state.spec)?.label_cn || state.spec);
+  let scope;
+  if (state.spec === "ALL") scope = "全部规格";
+  else if (state.spec.startsWith("CAT:")) {
+    const cat = DATA.meta.categories.find(c => c.id === state.spec.slice(4));
+    scope = cat ? cat.label : state.spec;
+  } else {
+    const sp = currentSpec();
+    scope = sp ? `${sp.label_cn}（${sp.mid}）` : state.spec;
+  }
   document.getElementById("kpiScope").textContent =
-    `${specLabel} · ${months[0]} → ${months[months.length-1]} · 指标：${metricLabel()}`;
+    `${scope} · ${months[0]} → ${months[months.length-1]} · 指标：${metricLabel()}`;
   const cells = [
     {label:"系统总" + metricLabel(), value: metricFmt(sysTotal), sub:"单位：" + metricUnit()},
     {label:"覆盖门店数", value: stores.length, sub:`记录数 ${recCount}`},
@@ -419,13 +521,13 @@ function renderKpis(months, stores) {
 }
 
 function renderAlerts(stores) {
-  const flagged = stores.filter(s => s.status !== "正常");
+  const flagged = stores.filter(s => s.status && s.status !== "正常");
   const sec = document.getElementById("secAlerts");
   if (!flagged.length) { sec.style.display = "none"; return; }
   sec.style.display = "";
   document.getElementById("alertStrip").innerHTML = flagged.map(s => {
     const reason = s.status === "异常"
-      ? `统计离群：总量 ${fmtN(s.total_loss_ml,0)} mL（z=${(s.z_score??0).toFixed(2)}）`
+      ? `统计离群：总量 ${metricFmt(s.total_view)}（z=${(s.z_score??0).toFixed(2)}）`
       : `最新月环比 ${fmtPct(s.latest_mom_pct)}，且总量高于中位数`;
     const cls = STATUS_CLASS[s.status];
     return `<div class="alert-card ${cls}">
@@ -436,6 +538,11 @@ function renderAlerts(stores) {
 }
 
 function renderRank(stores) {
+  restoreCanvas("#rankBody", `<div class="chart-wrap tall"><canvas id="chartRank"></canvas></div>`);
+  if (!stores.length) {
+    showEmpty("#rankBody", "当前规格暂无门店损耗记录");
+    return;
+  }
   const sysTotal = stores.reduce((a,s)=>a + s.total_view, 0) || 1;
   const arr = stores.slice().sort((a,b)=>b.total_view - a.total_view);
   const labels = arr.map(s => s.store_name);
@@ -468,7 +575,7 @@ function renderRank(stores) {
             return [
               `${metricFmt(s.total_view)} (占系统 ${fmtPctU(pct)})`,
               `较店均 ${fmtPct(mean ? (s.total_view-mean)/mean*100 : 0)}`,
-              `状态: ${s.status} · 活跃 ${s.active_view} 月`
+              `状态: ${s.status||"—"} · 活跃 ${s.active_view} 月`
             ];
           }
         }}
@@ -513,13 +620,18 @@ function renderRank(stores) {
   });
   const parts = [];
   if (state.metric === "intensity")
-    parts.push("强度口径：每千笔订单产生的过期销毁 mL；销量数据来自 t_order_store_fact，cycle_type=hour 汇总。");
-  if (state.metric === "ml" || state.metric === "usd")
+    parts.push("强度口径：每千笔订单产生的过期销毁；销量数据来自 t_order_store_fact，cycle_type=hour 汇总。");
+  if (effectiveMetric() === "usd" || effectiveMetric() === "qty")
     parts.push("绝对量口径会受门店开业时间影响（新店活跃月少）；切换至「损耗强度」可看销量平准化后的对比。");
   document.getElementById("rankCaveat").textContent = parts.join(" ");
 }
 
 function renderPareto(stores) {
+  restoreCanvas("#paretoBody", `<div class="chart-wrap"><canvas id="chartPareto"></canvas></div>`);
+  if (!stores.length) {
+    showEmpty("#paretoBody", "暂无数据");
+    return;
+  }
   const sorted = stores.slice().sort((a,b)=>b.total_view - a.total_view);
   const total = sorted.reduce((a,s)=>a+s.total_view, 0) || 1;
   const labels = sorted.map(s=>s.store_name);
@@ -557,33 +669,54 @@ function renderPareto(stores) {
   });
 }
 
-function renderSpecMix(months) {
-  // Stacked bar of each store by spec. Only meaningful when state.spec="ALL".
-  // We always render it (when not ALL it just shows the single spec).
-  // Use mL by default; switch to USD if metric is usd.
-  const useUsd = state.metric === "usd";
-  const stores = DATA.stores_all.slice().sort((a,b)=>b.total_loss_ml - a.total_loss_ml);
+function renderSpecMix() {
+  // Stacks USD across stores by CATEGORY when ALL view, or by SKU within a category.
+  restoreCanvas("#specMixBody", `<div class="chart-wrap"><canvas id="chartSpecMix"></canvas></div>`);
+  const stores = DATA.stores_all.slice().sort((a,b)=>b.total_loss_usd - a.total_loss_usd);
+  if (!stores.length) { showEmpty("#specMixBody", "暂无数据"); return; }
   const labels = stores.map(s => s.store_name);
-  const specList = DATA.meta.specs.filter(sp => (DATA.stores_by_spec[sp.mid]||[]).length > 0);
-  const datasets = specList.map(sp => ({
-    label: sp.label_cn,
-    backgroundColor: SPEC_COLORS[sp.mid] || PALETTE.primary,
-    data: stores.map(s => {
-      const b = s.spec_breakdown && s.spec_breakdown[sp.mid];
-      if (!b) return 0;
-      return useUsd ? b.usd : b.ml;
-    }),
-  }));
+  let datasets, title, note;
+
+  if (state.spec === "ALL") {
+    // Stack by category
+    title = "门店 × 品类 构成";
+    note = "堆叠条形图：每家门店的 USD 损耗按 9 个品类拆分（颜色 = 品类）。";
+    datasets = DATA.meta.categories.map(({id, label}) => ({
+      label, backgroundColor: CATEGORY_COLORS[id] || PALETTE.primary,
+      data: stores.map(s => (s.cat_breakdown && s.cat_breakdown[id]?.usd) || 0),
+    })).filter(ds => ds.data.some(v => v > 0));
+  } else if (state.spec.startsWith("CAT:")) {
+    const cat = state.spec.slice(4);
+    title = `门店 × 规格 构成（${DATA.meta.categories.find(c=>c.id===cat)?.label || cat}）`;
+    note = "堆叠条形图：选中品类内每个 SKU 的 USD 损耗分布。";
+    const skusInCat = DATA.meta.specs.filter(sp => sp.cat === cat && sp.has_data);
+    datasets = skusInCat.map(sp => ({
+      label: sp.label_cn, backgroundColor: SPEC_COLORS[sp.mid] || PALETTE.primary,
+      data: stores.map(s => (s.spec_breakdown && s.spec_breakdown[sp.mid]?.usd) || 0),
+    })).filter(ds => ds.data.some(v => v > 0));
+  } else {
+    // Single-spec: bar of that one SKU's USD per store
+    title = "门店 × 当前规格 构成";
+    note = "选中单一规格时，柱条仅显示该规格在每家门店的 USD 损耗。";
+    const sp = currentSpec();
+    datasets = [{
+      label: sp ? sp.label_cn : state.spec,
+      backgroundColor: sp ? SPEC_COLORS[sp.mid] : PALETTE.primary,
+      data: stores.map(s => (s.spec_breakdown && s.spec_breakdown[state.spec]?.usd) || 0),
+    }];
+  }
+  document.getElementById("specMixTitle").textContent = title;
+  document.getElementById("specMixNote").textContent = note;
   if (chartSpecMix) chartSpecMix.destroy();
   chartSpecMix = new Chart(document.getElementById("chartSpecMix"), {
     type: "bar",
     data: { labels, datasets },
     options: { indexAxis:"y", maintainAspectRatio:false,
-      plugins: { legend: { position: "top" },
-        tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${useUsd ? fmtUsd(ctx.parsed.x) : fmtN(ctx.parsed.x,0)+' mL'}` } }
+      plugins: { legend: { position: "top", labels: {boxWidth:14, font:{size:11}} },
+        tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${fmtUsd(ctx.parsed.x)}` } }
       },
       scales: {
-        x: { stacked:true, ticks:{ callback: v => v.toLocaleString() } },
+        x: { stacked:true, ticks:{ callback: v => "$"+v.toLocaleString() } },
         y: { stacked:true, grid:{ display:false } }
       }
     }
@@ -593,6 +726,12 @@ function renderSpecMix(months) {
 let leagueSort = { key: "total_view", dir: -1 };
 function renderLeague(months, stores) {
   const tbl = document.getElementById("tblLeague");
+  if (!stores.length) {
+    document.getElementById("leagueBody").innerHTML = `<div class="empty-state">暂无数据</div>`;
+    return;
+  }
+  document.getElementById("leagueBody").innerHTML = `<table class="league" id="tblLeague"></table>`;
+  const tbl2 = document.getElementById("tblLeague");
   const sysTotal = stores.reduce((a,s)=>a + s.total_view, 0) || 1;
   const totals = stores.map(s=>s.total_view).sort((a,b)=>a-b);
   const median = totals.length ? totals[Math.floor((totals.length-1)/2)] : 0;
@@ -618,12 +757,12 @@ function renderLeague(months, stores) {
     total_loss_usd:"total_loss_usd", intensity_total:"intensity_total",
     active_view:"active_view",
     latest_mom_view:"latest_mom_view", status:"status", spark:"total_view" };
-  tbl.innerHTML = `
+  tbl2.innerHTML = `
     <thead><tr>${hdr.map(h => `<th data-k="${h[0]}">${h[1]}</th>`).join("")}</tr></thead>
     <tbody>${arr.map(s => {
       const share = s.total_view/sysTotal*100;
       const cls = s.status === "异常" ? "outlier" : (s.status === "需关注" ? "attn" : "");
-      const pcls = STATUS_CLASS[s.status];
+      const pcls = STATUS_CLASS[s.status] || "s-zc";
       const intensityStr = s.intensity_total == null ? "—" : fmtN(s.intensity_total, 1);
       return `<tr class="${cls}" data-dk="${storeKey(s)}">
         <td>${s.rank}</td>
@@ -636,10 +775,10 @@ function renderLeague(months, stores) {
         <td>${s.active_view}</td>
         <td>${sparkline(s.monthly_view)}</td>
         <td style="color:${(s.latest_mom_view??0)>=0?PALETTE.red:PALETTE.green}">${fmtPct(s.latest_mom_view)}</td>
-        <td><span class="status-pill ${pcls}">${s.status}</span></td>
+        <td><span class="status-pill ${pcls}">${s.status||"—"}</span></td>
       </tr>`;
     }).join("")}</tbody>`;
-  tbl.querySelectorAll("th").forEach(th => {
+  tbl2.querySelectorAll("th").forEach(th => {
     th.onclick = () => {
       const target = sortKeyMap[th.dataset.k] || "total_view";
       if (leagueSort.key === target) leagueSort.dir *= -1;
@@ -647,7 +786,7 @@ function renderLeague(months, stores) {
       renderLeague(months, stores);
     };
   });
-  tbl.querySelectorAll("tbody tr").forEach(tr => {
+  tbl2.querySelectorAll("tbody tr").forEach(tr => {
     tr.onclick = () => {
       state.selectedStore = tr.dataset.dk;
       document.getElementById("fStore").value = tr.dataset.dk;
@@ -673,6 +812,8 @@ function sparkline(values) {
 }
 
 function renderTrend(months, stores) {
+  restoreCanvas("#trendBody", `<div class="chart-wrap"><canvas id="chartTrend"></canvas></div>`);
+  if (!stores.length) { showEmpty("#trendBody", "暂无数据"); return; }
   if (chartTrend) chartTrend.destroy();
   const sysSeries = months.map(m => stores.reduce((a,s)=>a + (monthlyArr(s)[DATA.meta.months.indexOf(m)]||0), 0));
   const meanSeries = sysSeries.map(v => stores.length ? v / stores.length : 0);
@@ -711,6 +852,12 @@ function hueColor(i) {
 
 function renderHeat(months, stores) {
   const wrap = document.getElementById("heatWrap");
+  if (!wrap) { document.getElementById("heatBody").innerHTML = `<div id="heatWrap"></div>`; }
+  if (!stores.length) { document.getElementById("heatBody").innerHTML = `<div class="empty-state">暂无数据</div>`; return; }
+  const wrap2 = document.getElementById("heatWrap") || (() => {
+    document.getElementById("heatBody").innerHTML = `<div id="heatWrap"></div>`;
+    return document.getElementById("heatWrap");
+  })();
   const cells = stores.flatMap(s => months.map(m => monthlyArr(s)[DATA.meta.months.indexOf(m)] || 0));
   const maxV = Math.max(...cells, 1);
   const cellColor = v => {
@@ -733,16 +880,16 @@ function renderHeat(months, stores) {
   });
   html += `<tr class="total"><td>合计</td>${colTotals.map(v=>`<td>${metricFmt(v)}</td>`).join("")}<td>${metricFmt(grand)}</td></tr>`;
   html += `</tbody></table>`;
-  wrap.innerHTML = html;
+  wrap2.innerHTML = html;
 }
 
 function renderNonStores(months) {
   const sec = document.getElementById("secNonStore");
   if (!DATA.non_stores || !DATA.non_stores.length) { sec.style.display = "none"; return; }
-  let html = `<table class="league"><thead><tr><th>部门名称</th><th>dept_id</th><th>报损量 (mL)</th>
+  let html = `<table class="league"><thead><tr><th>部门名称</th><th>dept_id</th>
     <th>报损金额 (USD)</th><th>记录数</th><th>首月</th><th>末月</th><th>主操作人</th></tr></thead><tbody>`;
   DATA.non_stores.forEach(s => {
-    html += `<tr><td>${s.store_name}</td><td>${s.dept_id}</td><td>${fmtN(s.total_loss_ml,0)}</td>
+    html += `<tr><td>${s.store_name}</td><td>${s.dept_id}</td>
       <td>${fmtUsd(s.total_loss_usd)}</td><td>${s.record_count}</td>
       <td>${s.first_month||"—"}</td><td>${s.last_active_month||"—"}</td>
       <td>${s.top_operator||"—"}</td></tr>`;
@@ -756,18 +903,21 @@ function renderDrill(months, stores) {
   const target = dk ? stores.find(s => storeKey(s) === dk)
                     : stores.slice().sort((a,b)=>b.total_view - a.total_view)[0];
   document.getElementById("drillStoreLabel").textContent = target ? `${target.store_name} (${target.shop_no})` : "—";
-  if (!target) return;
+  if (!target) {
+    document.getElementById("drillKpis").innerHTML = `<div class="empty-state" style="grid-column:1/-1">暂无数据</div>`;
+    return;
+  }
   const sysTotal = stores.reduce((a,s)=>a+s.total_view, 0) || 1;
   const mean = stores.length ? sysTotal / stores.length : 0;
   let worstM = "—", worstV = 0;
   target.monthly_view.forEach((v, i) => { if (v > worstV) { worstV = v; worstM = months[i]; } });
   const k = [
     {label:"总" + metricLabel(), value: metricFmt(target.total_view), sub:`活跃 ${target.active_view} 月`},
-    {label:"占系统%", value: fmtPctU(sysTotal ? target.total_view/sysTotal*100 : 0), sub:`排名 #${target.rank}`},
+    {label:"占系统%", value: fmtPctU(sysTotal ? target.total_view/sysTotal*100 : 0), sub:`排名 #${target.rank||"—"}`},
     {label:"较店均", value: fmtPct(mean ? (target.total_view-mean)/mean*100 : 0), sub:`店均 ${metricFmt(mean)}`},
-    {label:"累计 USD", value: fmtUsd(target.total_loss_usd), sub:"全部规格"},
+    {label:"累计 USD", value: fmtUsd(target.total_loss_usd), sub: state.spec==="ALL" ? "全部规格" : ""},
     {label:"总订单", value: fmtN(target.total_sales,0), sub:"窗口期总订单数"},
-    {label:"损耗强度", value: target.intensity_total==null?"—":fmtN(target.intensity_total,1), sub:"mL/千单"},
+    {label:"损耗强度", value: target.intensity_total==null?"—":fmtN(target.intensity_total,1), sub: (state.spec==="ALL"||state.spec.startsWith("CAT:"))?"USD/千单":"qty/千单"},
     {label:"最新月", value: metricFmt(target.latest_view), sub: months[target.last_active_idx_view] || "—"},
     {label:"最新月环比", value: fmtPct(target.latest_mom_view), sub:"较上一有数据月"},
     {label:"最糟月份", value: worstM, sub: metricFmt(worstV)},
@@ -793,30 +943,55 @@ function renderDrill(months, stores) {
     }
   });
 
-  // spec breakdown donut — use ALL aggregate spec_breakdown
-  const all = DATA.stores_all.find(s => storeKey(s) === storeKey(target));
+  // Drill donut: prefer category breakdown for ALL view; SKU breakdown for category drill;
+  // operators-only for single SKU view.
   if (chartDrillSpec) chartDrillSpec.destroy();
-  if (all && all.spec_breakdown) {
-    const useUsd = state.metric === "usd";
-    const entries = Object.entries(all.spec_breakdown);
-    const labels = entries.map(([k]) => DATA.meta.specs.find(sp=>sp.mid===k)?.label_cn || k);
-    const dataVals = entries.map(([_, v]) => useUsd ? v.usd : v.ml);
-    const colors = entries.map(([k]) => SPEC_COLORS[k] || PALETTE.primary);
+  const all = DATA.stores_all.find(s => storeKey(s) === storeKey(target));
+  let donutTitle, donutLabels, donutValues, donutColors;
+  if (state.spec === "ALL" && all && all.cat_breakdown) {
+    donutTitle = "品类构成";
+    const entries = Object.entries(all.cat_breakdown).sort((a,b)=>b[1].usd-a[1].usd);
+    donutLabels = entries.map(([k]) => DATA.meta.categories.find(c=>c.id===k)?.label || k);
+    donutValues = entries.map(([_, v]) => v.usd);
+    donutColors = entries.map(([k]) => CATEGORY_COLORS[k] || PALETTE.primary);
+  } else if (state.spec.startsWith("CAT:") && all && all.spec_breakdown) {
+    const cat = state.spec.slice(4);
+    donutTitle = "规格构成（当前品类）";
+    const entries = Object.entries(all.spec_breakdown)
+      .filter(([k]) => SPECS_BY_MID[k]?.cat === cat)
+      .sort((a,b)=>b[1].usd-a[1].usd);
+    donutLabels = entries.map(([k]) => SPECS_BY_MID[k]?.label_cn || k);
+    donutValues = entries.map(([_, v]) => v.usd);
+    donutColors = entries.map(([k]) => SPEC_COLORS[k] || PALETTE.primary);
+  } else if (all && all.spec_breakdown && all.spec_breakdown[state.spec]) {
+    donutTitle = "当前规格 vs 该店其他规格";
+    const sel = all.spec_breakdown[state.spec];
+    const otherUsd = (all.total_loss_usd || 0) - (sel.usd || 0);
+    donutLabels = [SPECS_BY_MID[state.spec]?.label_cn || state.spec, "该店其他规格"];
+    donutValues = [sel.usd, Math.max(otherUsd, 0)];
+    donutColors = [SPEC_COLORS[state.spec] || PALETTE.primary, "#CBD5E1"];
+  } else {
+    donutTitle = "品类构成";
+    donutLabels = []; donutValues = []; donutColors = [];
+  }
+  document.getElementById("drillSpecTitle").textContent = donutTitle;
+  if (donutValues.length && donutValues.some(v => v > 0)) {
     chartDrillSpec = new Chart(document.getElementById("chartDrillSpec"), {
       type: "doughnut",
-      data: { labels, datasets: [{ data: dataVals, backgroundColor: colors }] },
+      data: { labels: donutLabels, datasets: [{ data: donutValues, backgroundColor: donutColors }] },
       options: { maintainAspectRatio:false,
         plugins:{ legend:{ position:"right", labels:{font:{size:11}} },
-          tooltip:{ callbacks:{ label: ctx => `${ctx.label}: ${useUsd ? fmtUsd(ctx.parsed) : fmtN(ctx.parsed,0)+' mL'}` } } }
+          tooltip:{ callbacks:{ label: ctx => `${ctx.label}: ${fmtUsd(ctx.parsed)}` } } }
       }
     });
   }
 
   const ops = target.operators || [];
+  const opUnit = effectiveMetric() === "usd" ? "USD" : metricUnit();
   document.getElementById("tblOperators").innerHTML = `
-    <thead><tr><th>操作人</th><th>记录数</th><th>报损量 (mL)</th><th>占该店%</th></tr></thead>
+    <thead><tr><th>操作人</th><th>记录数</th><th>${opUnit}</th><th>占该店%</th></tr></thead>
     <tbody>${ops.map(o => `
-      <tr><td>${o.name}</td><td>${o.count}</td><td>${fmtN(o.qty,0)}</td><td>${fmtPctU(o.share_pct)}</td></tr>
+      <tr><td>${o.name}</td><td>${o.count}</td><td>${effectiveMetric()==="usd"?fmtUsd(o.qty):fmtN(o.qty,0)}</td><td>${fmtPctU(o.share_pct)}</td></tr>
     `).join("")}</tbody>`;
 }
 
@@ -824,17 +999,16 @@ function exportCurrentCsv() {
   const months = activeMonths();
   const stores = sortStores(activeStoresAll().map(s => storeView(s, months)));
   const headers = ["rank","dept_id","shop_no","store_name","area",
-                   `total_${state.metric}`, "total_loss_ml", "total_loss_usd", "total_sales", "intensity_per_1k",
+                   `total_${effectiveMetric()}`, "total_loss_usd", "total_sales", "intensity_per_1k",
                    "active_months","record_count","status","spec_scope", ...months];
   const sysTotal = stores.reduce((a,s)=>a+s.total_view, 0) || 1;
   const rows = stores.map((s,i) => {
     const base = [i+1, s.dept_id, s.shop_no, s.store_name, s.area,
                   s.total_view.toFixed(2),
-                  s.total_loss_ml.toFixed(2),
-                  s.total_loss_usd.toFixed(2),
-                  s.total_sales,
+                  (s.total_loss_usd||0).toFixed(2),
+                  s.total_sales||0,
                   s.intensity_total == null ? "" : s.intensity_total.toFixed(4),
-                  s.active_view, s.record_count, s.status, state.spec];
+                  s.active_view, s.record_count, s.status||"", state.spec];
     return base.concat(s.monthly_view.map(v => v.toFixed(2)));
   });
   const csv = [headers, ...rows].map(r => r.map(c => {
@@ -844,7 +1018,7 @@ function exportCurrentCsv() {
   const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = `spoilage_${state.spec}_${state.metric}_${state.monthFrom}_${state.monthTo}.csv`;
+  a.href = url; a.download = `spoilage_${state.spec.replace(/[^A-Za-z0-9_-]/g,"")}_${effectiveMetric()}_${state.monthFrom}_${state.monthTo}.csv`;
   a.click(); URL.revokeObjectURL(url);
 }
 
@@ -858,7 +1032,7 @@ function render() {
   renderAlerts(stores);
   renderRank(stores);
   renderPareto(stores);
-  renderSpecMix(months);
+  renderSpecMix();
   renderLeague(months, stores);
   renderTrend(months, stores);
   renderHeat(months, stores);
@@ -867,7 +1041,8 @@ function render() {
 }
 
 // header / footer
-document.getElementById("hdrSpec").textContent = "规格：" + DATA.meta.specs.filter(sp => (DATA.stores_by_spec[sp.mid]||[]).length>0).map(sp=>sp.label_cn).join(" / ");
+const withData = DATA.meta.specs.filter(sp => sp.has_data).length;
+document.getElementById("hdrSpec").textContent = `${DATA.meta.spec_count} 种规格 / ${DATA.meta.categories.length} 个品类（${withData} 个有记录）`;
 document.getElementById("hdrPeriod").textContent = `周期：${DATA.meta.period_start} → ${DATA.meta.period_end}`;
 document.getElementById("tzBadge").textContent = "时区：" + DATA.meta.timezone;
 document.getElementById("ftrPeriod").textContent = `${DATA.meta.period_start} → ${DATA.meta.period_end}`;
@@ -896,4 +1071,5 @@ with open(HTML, "w", encoding="utf-8") as f:
     f.write(html)
 print(f"wrote {HTML}  ({os.path.getsize(HTML):,} bytes)")
 print(f"stores_all={len(payload['stores_all'])}  non_stores={len(payload['non_stores'])}  "
-      f"months={len(payload['meta']['months'])}  specs={len(payload['meta']['specs'])}")
+      f"months={len(payload['meta']['months'])}  specs={len(payload['meta']['specs'])}  "
+      f"specs_with_data={payload['meta']['spec_with_data_count']}")

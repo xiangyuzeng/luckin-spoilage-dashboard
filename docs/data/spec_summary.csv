@@ -1,5 +1,45 @@
-spec_mid,label,name,cost_per_ml,total_records,total_loss_ml,total_loss_usd,store_count_with_loss
-GS07788-01,脱脂奶 4/1 GAL CS,Cream-O-Land Fat-free Milk 4/1 GAL CS,0.000911,2037,3951276.20,3598.95,18
-GS07786-01,全脂奶 4/1 GAL CS,Cream-O-Land Whole Milk 4/1 GAL CS,0.001052,2144,2677409.70,2815.35,18
-GS07785-01,2% 减脂奶 4/1 GAL CS,Cream-O-Land 2% Reduced fat milk 4/1 GAL CS,0.000983,1806,2525232.50,2481.87,18
-GS07786-02,全脂奶 DSD,Cream-O-Land Whole Milk 1GAL*4bottles/CTN-DSD,0.001059,1,60.00,0.06,1
+spec_mid,category,label,name,unit,cost_per_unit,total_records,total_loss_qty,total_loss_usd,store_count_with_loss
+GS07785-01,dairy,Cream-O-Land 2% 减脂奶 4/1 GAL CS,Cream-O-Land- 2% Reduced fat milk- 4/1 GAL CS,mL,0.000912,1867,2569200.50,2343.49,18
+GS07786-01,dairy,Cream-O-Land 全脂奶 4/1 GAL CS,Cream-O-Land- Whole Milk- 4/1 GAL CS,mL,0.000999,2207,2711884.60,2708.25,18
+GS07788-01,dairy,Cream-O-Land 脱脂奶 4/1 GAL CS,Cream-O-Land- Fat free Milk- 4/1 GAL CS,mL,0.000869,2108,4003296.80,3479.96,18
+GS07786-02,dairy,Cream-O-Land 全脂奶 1GAL*4 DSD,Cream-O-Land- Whole Milk- 1GAL*4bottles/CTN-DSD,mL,0.001067,1,60.00,0.06,1
+GS07506-01,dairy,菲诺厚椰乳 1kg*12/箱,Barista Coconut-1kg/瓶*12/箱,mL,0.002832,2118,1922579.00,5445.13,18
+GS07565-01,dairy,Oatly 燕麦奶 12/32 OZ CS,Oatly- Oat Milk- 12/32 OZ CS,mL,0.001991,2282,1636409.80,3257.74,18
+GS07579-01,dairy,Califia 巴旦木奶 12/32 OZ CS,Califia- Almond Milk-12/32 OZ CS,mL,0.002920,2248,1777053.10,5189.33,18
+GS07575-01,dairy,Wholesome 冰淇淋奶浆 6/64 OZ CS,Wholesome- Ice cream mix vanilla- 6/64 OZ CS,g,0.003033,71,255787.50,775.84,11
+GS07743-01,dairy,Wholesome 奶油 12/32 OZ CS,Wholesome- Heavy whipping cream- 12/32OZ CS,g,0.004750,1158,832602.40,3954.61,16
+GS07465-01,coffee,Luckin Medium Roast Espresso 6/2lb,Luckin Medium Roast Espresso Blend 6/2lb CS,g,0.015668,110,18188.80,284.98,14
+GS07466-01,coffee,Luckin Dark Roast Espresso 6/2lb,Luckin Dark Roast Espresso Blend 6/2lb CS,g,0.016244,86,12619.20,204.99,14
+GS07469-01,coffee,Luckin Cold Brew Blend 5/5lb,Luckin Cold Brew Coffee Blend 5/5lb CS,g,0.013029,0,0.00,0.00,0
+GS07468-01,coffee,Luckin Decaf Blend 6/2lb,Luckin Decaf Blend 6/2lb CS,g,0.014809,159,76076.60,1126.64,13
+GS07470-01,coffee,Luckin Drip Coffee Blend 6/2lb,Luckin Drip Coffee Blend 6/2lb CS,g,0.015900,69,56180.80,893.30,12
+GS08253-01,bakery,J.K Pâtisserie 巧克力曲奇,J.K Pâtisserie & Bakery Chocolate Chip Cookies,个,3.230000,1539,5493.00,17742.39,18
+GS08251-01,bakery,J.K Pâtisserie 双重巧克力玛芬,J.K Pâtisserie & Bakery Double Chocolate Muffin,个,2.200000,1511,6860.00,15092.00,18
+GS08252-01,bakery,J.K Pâtisserie 巴旦木可颂,J.K Pâtisserie & Bakery Almond Croissant,个,3.190000,1413,7879.00,25134.01,18
+GS08254-01,bakery,J.K Pâtisserie 巧克力可颂,J.K Pâtisserie & Bakery Chocolate Croissant,个,2.420000,1479,9453.00,22876.26,18
+GS07859-01,bakery,蛋堡可颂 12/4.9 OZ CS,Croissant Sausage Egg & Cheese-12/4.9 OZ CS,个,1.811417,1763,2747.00,4975.96,18
+GS07490-01,syrup,DVG 肉桂糖浆 4/750ML CS,DVG Natural Cinnamon Bark Syrup-4/750ML CS,mL,0.007600,29,1648.60,12.53,9
+GS07491-01,syrup,DVG PL 榛子糖浆 4/750ML CS,DVG PL Original Hazelnut-4/750ML CS,mL,0.006673,24,1061.00,7.08,8
+GS07494-01,syrup,DVG PL 蔗糖糖浆 4/750ML CS,DVG PL Cane Sugar-4/750ML CS,mL,0.006673,275,13557.40,90.47,17
+GS07495-01,syrup,DVG PL 香草糖浆 4/750ML CS,DVG PL Vanilla-4/750ML CS,mL,0.006673,78,3533.00,23.58,15
+GS07496-01,syrup,DVG PL 焦糖糖浆 4/750ML CS,DVG PL Caramel-4/750ML CS,mL,0.006673,63,2761.00,18.43,13
+GS07749-01,syrup,DVG PL 草莓糖浆 4/750ML CS,DVG PL Strawberry Fraise-4/750ML CS,mL,0.006670,40,8155.10,54.39,13
+GS07492-01,syrup,香草冰沙粉 5/3.5lb CS,BC Vanilla Smthie-5/3.5lb CS,g,0.012975,61,15443.30,200.37,14
+GS08300-01,syrup,爆米花糖浆 1L/瓶,Popcorn Syrup Artificially flavored-1L/bottle,mL,0.027868,35,1217.00,33.91,11
+GS08916-01,syrup,焦糖布丁糖浆 12/1L CS,Creme Brulee Syrup Artificially Flavored-12/1L CS,mL,0.041231,27,1039.00,42.84,7
+GS08917-01,syrup,太妃糖浆 12/1L CS,Toffee Nut Syrup Artificially Flavored-12/1L CS,mL,0.037349,25,860.40,32.14,9
+GS09538-01,syrup,Monin 柚子果泥 1L*4/CTN,Monin-Yuzu Purée-1L*4bottles/CTN,mL,0.015070,10,2099.00,31.63,2
+GS09631-01,syrup,DVG 夏威夷海盐焦糖糖浆 750ml*4,DVG-NAT HAWAIIAN SALTED CARAMEL SYRUP-750ml*4bottles/CTN,mL,0.007000,18,532.00,3.72,10
+GS07746-01,sauce,DVG 巧克力酱 6/0.5GAL CS,DVG Chocolate Sauce-6/0.5GAL CS,g,0.005263,15,12095.40,63.66,9
+GS07769-01,sauce,Lyons Magnus 焦糖淋酱 12/17 OZ CS,Lyons Magnus- Sauce Caramel- 12/17 OZ CS,g,0.007260,1828,114780.50,833.26,18
+GS07763-01,sauce,甜炼乳 24/14 OZ CS,Milk Condensed Sweetened- 24/14 OZ CS,g,0.005703,2217,480488.40,2740.16,18
+GS07738-01,powder,McCormick 肉桂粉 6/18 OZ CS,MicCormick- Cinnamon Powder- 6/18 OZ CS,g,0.031013,18,4308.80,133.63,4
+GS07738-02,powder,McCormick 肉桂粉 6/29 OZ CS,MicCormick- Cinnamon Powder- 6/29 OZ CS,g,0.019138,153,46330.10,886.68,15
+GS07744-02,powder,顺大可可粉 200g*30/CTN,Shunda-Cocoa Flavored Beverage Base Powder-200g*30bags/CTN,g,0.013337,84,6310.00,84.15,16
+GS07964-01,powder,茉莉花茶粉 300g/袋,Jasmine Flavored Tea Powder (new)-300g/bag,g,0.037851,29,17814.00,674.27,11
+GS07976-01,powder,京都抹茶粉 20/100g CS,KYOTO MATCHA-20/100g CS,g,0.268770,415,16649.10,4474.78,18
+GS09432-01,powder,顺大云感粉 300g*20/CTN,Shunda-Soft Cloud Beverage Base Powder-300g*20bags/CTN,g,0.017922,8,576.00,10.32,5
+GS09530-01,seasoning,莫顿精细海盐 17.60oz*12/CTN,Morton-Fine Sea Salt-17.60oz*12 canisters/CTN,g,0.005517,23,1234.00,6.81,5
+GS07510-01,beverage,菲诺椰皇水 12/1kg CS,Coconut Water Beverage-1kg/瓶*12/箱,mL,0.006064,1322,848566.00,5145.37,14
+GS09641-01,beverage,Polar 原味苏打水 20oz*24/CTN,Polar-Water Seltzer Plain-20oz*24bottles/CTN,mL,0.001116,254,75929.20,84.71,14
+GS07586-01,other,ISI 奶油枪气弹 8.4g*10*36/箱,US-ISI 奶油枪用气弹（8.4g)10个*36盒/箱,个,0.447000,0,0.00,0.00,0

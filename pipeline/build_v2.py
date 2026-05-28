@@ -1,47 +1,63 @@
-"""V2 builder — all four enhancements end-to-end.
+"""V2 builder — heterogeneous-unit version covering 44 物料 SKUs.
 
-1. Multi-spec: pull GS07788-01 (Fat-free), GS07786-01 (Whole), GS07785-01 (2% Reduced), GS07786-02 (DSD).
-2. USD overlay: multiply mL spoilage by per-mL cost = spec_cost_amount / (cg_dly_ratio * dly_use_ratio).
-3. Sales intensity: orders per store-month (from luckyus_sales_order.t_order_store_fact, cycle_type=3 hourly rolled to month).
-4. DST-aware bucketing: zoneinfo America/New_York (UTC-5 winter, UTC-4 summer) — replaces fixed UTC-5.
+Inputs:
+  cache/spec_metadata.json     — { specs: {sku: {spec_cost, cg_dly_ratio, dly_use_ratio,
+                                                use_unit_mid, scm_name}} }
+  cache/raw/batch_*.json       — MCP tool-result envelopes containing rows with
+                                 {spec_mid, operator_dept_id, operator_dept_name,
+                                  operator_name, total_adjust_num, operated_time}
+  pipeline/sku_catalog.py      — SKU_CATALOG (cat+label), CATEGORIES, UNIT_LABELS
 
-stdlib only (uses zoneinfo from py 3.9+).
+Outputs:
+  output/loss_records.csv          — tidy rows, one per spoilage record
+  output/store_benchmark.csv       — per-store rollups + USD-based status flags
+  output/store_month_matrix.csv    — store × month matrix (USD)
+  output/spec_summary.csv          — per-SKU totals
+  output/dashboard_payload.json    — JSON consumed by build_dashboard.py
+
+Unit handling: each SKU's cost_per_unit = spec_cost / (cg_dly_ratio * dly_use_ratio).
+loss_qty is in the SKU's use unit (mL / g / 个). loss_usd = loss_qty * cost_per_unit
+and is the only cross-SKU comparable metric.
 """
-import csv, json, os, math
+import csv, json, os, glob, math
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
+
+from sku_catalog import SKU_CATALOG, CATEGORIES, CATEGORY_LABEL, UNIT_LABELS
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 OUT_DIR = os.path.join(REPO_ROOT, "output")
 CACHE_DIR = os.path.join(REPO_ROOT, "cache")
+RAW_DIR = os.path.join(CACHE_DIR, "raw")
 os.makedirs(OUT_DIR, exist_ok=True)
 NY = ZoneInfo("America/New_York")
 
-# ===== inputs (cache dir; refreshed by pipeline/pull.py — see TODO at file bottom) =====
-
-SPEC_RAW_CSV    = os.path.join(CACHE_DIR, "spec_GS07788-01.csv")   # CSV form (one column: total_adjust_num signed)
-SPEC_JSON_07786 = os.path.join(CACHE_DIR, "spec_GS07786-01.json")  # MCP tool-result JSON form
-SPEC_JSON_07785 = os.path.join(CACHE_DIR, "spec_GS07785-01.json")
-
-# ===== spec metadata (from t_mdm_goods_spec + t_goods_spec_cost_detail) =====
-# cost_per_ml = spec_cost_amount / (cg_dly_ratio * dly_use_ratio); units verified via t_mdm_unit (QU013=mL).
-SPECS = {
-    "GS07788-01": {"name": "Cream-O-Land Fat-free Milk 4/1 GAL CS",
-                   "label_cn": "脱脂奶 4/1 GAL CS",
-                   "spec_cost": 13.79, "cg_dly_ratio": 4.0, "dly_use_ratio": 3785.0},
-    "GS07786-01": {"name": "Cream-O-Land Whole Milk 4/1 GAL CS",
-                   "label_cn": "全脂奶 4/1 GAL CS",
-                   "spec_cost": 15.92, "cg_dly_ratio": 4.0, "dly_use_ratio": 3785.0},
-    "GS07785-01": {"name": "Cream-O-Land 2% Reduced fat milk 4/1 GAL CS",
-                   "label_cn": "2% 减脂奶 4/1 GAL CS",
-                   "spec_cost": 14.88, "cg_dly_ratio": 4.0, "dly_use_ratio": 3785.0},
-    "GS07786-02": {"name": "Cream-O-Land Whole Milk 1GAL*4bottles/CTN-DSD",
-                   "label_cn": "全脂奶 DSD",
-                   "spec_cost": 16.04, "cg_dly_ratio": 1.0, "dly_use_ratio": 15140.0},
-}
-for k, v in SPECS.items():
-    v["cost_per_ml"] = v["spec_cost"] / (v["cg_dly_ratio"] * v["dly_use_ratio"])
+# ===== assemble SPECS from catalog + cache/spec_metadata.json =====
+META = json.load(open(os.path.join(CACHE_DIR, "spec_metadata.json"), encoding="utf-8"))["specs"]
+SPECS = {}
+for sku, cat in SKU_CATALOG.items():
+    m = META.get(sku)
+    if not m:
+        raise SystemExit(f"missing metadata for {sku} in cache/spec_metadata.json")
+    cost = float(m["spec_cost"])
+    cg = float(m["cg_dly_ratio"])
+    du = float(m["dly_use_ratio"])
+    use_unit = m["use_unit_mid"]
+    unit_label = UNIT_LABELS.get(use_unit, use_unit)
+    SPECS[sku] = {
+        "name": m.get("scm_name", cat["label_cn"]),
+        "label_cn": cat["label_cn"],
+        "cat": cat["cat"],
+        "cat_label": CATEGORY_LABEL[cat["cat"]],
+        "spec_cost": cost,
+        "cg_dly_ratio": cg,
+        "dly_use_ratio": du,
+        "use_unit_mid": use_unit,
+        "unit_label": unit_label,
+        "cost_per_unit": cost / (cg * du),
+    }
+print(f"loaded {len(SPECS)} specs across {len({s['cat'] for s in SPECS.values()})} categories")
 
 # ===== store master (subset of luckyus_opshop.t_shop_info status=1, NY area) =====
 SHOP_MASTER = {
@@ -103,53 +119,34 @@ SALES = [
 ]
 SALES_MAP = {(s, m): q for s, m, q in SALES}
 
-# ===== load raw spoilage rows =====
-def load_csv_rows(path):
-    out = []
-    with open(path, newline="", encoding="utf-8") as f:
-        for r in csv.DictReader(f):
-            out.append({
-                "spec_mid": "GS07788-01",
-                "operator_dept_id": int(r["operator_dept_id"]),
-                "operator_dept_name": r["operator_dept_name"],
-                "operator_name": r["operator_name"],
-                "total_adjust_num": float(r["total_adjust_num"]),
-                "operated_time": r["operated_time"],
-            })
-    return out
-
+# ===== load raw spoilage rows from cache/raw/batch_*.json =====
 def load_tool_result_rows(path):
-    raw = open(path).read()
-    arr = json.loads(raw)
+    arr = json.load(open(path, encoding="utf-8"))
     inner = json.loads(arr[0]["text"])
     return inner["rows"]
 
 raw_rows = []
-raw_rows.extend(load_csv_rows(SPEC_RAW_CSV))                  # GS07788-01: 2067
-raw_rows.extend(load_tool_result_rows(SPEC_JSON_07786))       # GS07786-01: 2172
-raw_rows.extend(load_tool_result_rows(SPEC_JSON_07785))       # GS07785-01: 1832
-# GS07786-02 (1 row, inline)
-raw_rows.append({
-    "spec_mid": "GS07786-02", "operator_dept_id": 20032, "operator_dept_name": "221 Grand",
-    "operator_name": "Kayen Wu He", "total_adjust_num": -60.0,
-    "operated_time": "2026-04-30T20:58:33",
-})
+for fp in sorted(glob.glob(os.path.join(RAW_DIR, "batch_*.json"))):
+    rs = load_tool_result_rows(fp)
+    raw_rows.extend(rs)
+    print(f"  loaded {len(rs):>5} rows from {os.path.relpath(fp, REPO_ROOT)}")
 
-print(f"loaded {len(raw_rows)} raw spoilage rows across {len({r['spec_mid'] for r in raw_rows})} specs")
+# drop rows for SKUs not in catalog (defensive: catalog is the whitelist)
+raw_rows = [r for r in raw_rows if r.get("spec_mid") in SPECS]
+specs_with_data = {r["spec_mid"] for r in raw_rows}
+print(f"loaded {len(raw_rows)} raw spoilage rows across {len(specs_with_data)}/{len(SPECS)} specs with data")
+print(f"specs with no records: {sorted(set(SPECS) - specs_with_data)}")
 
 # ===== DST-aware bucketing + DST audit =====
 def parse_utc(s):
-    # SCM stores naive UTC
     dt = datetime.fromisoformat(s)
     return dt.replace(tzinfo=timezone.utc)
 
-dst_drift = []  # rows whose NY-bucketed month differs from fixed-UTC-5 month
+dst_drift = []
 for r in raw_rows:
     utc_dt = parse_utc(r["operated_time"])
     ny_dt = utc_dt.astimezone(NY)
-    fixed_est = utc_dt.replace(tzinfo=None).replace(microsecond=0)
-    from datetime import timedelta
-    fixed_est_dt = (utc_dt.replace(tzinfo=None) - timedelta(hours=5))
+    fixed_est_dt = utc_dt.replace(tzinfo=None) - timedelta(hours=5)
     ny_month = ny_dt.strftime("%Y-%m")
     fx_month = fixed_est_dt.strftime("%Y-%m")
     r["ny_dt"] = ny_dt
@@ -159,8 +156,6 @@ for r in raw_rows:
         dst_drift.append({"spec": r["spec_mid"], "dept": r["operator_dept_id"],
                           "utc": r["operated_time"], "ny_month": ny_month, "fixed_month": fx_month})
 print(f"DST audit: {len(dst_drift)} rows would shift months between zoneinfo NY vs fixed UTC-5")
-for d in dst_drift[:10]:
-    print(f"  {d}")
 
 # ===== normalize records =====
 records = []
@@ -179,11 +174,13 @@ for r in raw_rows:
     else:
         shop_no, store_name, is_store = "UNKNOWN", dept_name, True
     spec = SPECS[r["spec_mid"]]
-    loss_mL = abs(qty)
-    loss_usd = loss_mL * spec["cost_per_ml"]
+    loss_qty = abs(qty)
+    loss_usd = loss_qty * spec["cost_per_unit"]
     records.append({
         "spec_mid": r["spec_mid"],
         "spec_name": spec["label_cn"],
+        "category": spec["cat"],
+        "unit_label": spec["unit_label"],
         "dept_id": dept_id,
         "shop_no": shop_no,
         "store_name": store_name,
@@ -193,16 +190,18 @@ for r in raw_rows:
         "ny_time": r["ny_dt"].strftime("%Y-%m-%dT%H:%M:%S"),
         "utc_time": r["operated_time"],
         "operator": r["operator_name"],
-        "signed_qty_ml": qty,
-        "loss_qty_ml": loss_mL,
+        "signed_qty": qty,
+        "loss_qty": loss_qty,
         "loss_usd": loss_usd,
         "source": "in-store app",
     })
 
-# ===== write tidy loss_records.csv =====
+# ===== month axis =====
 months_all = sorted({r["ny_month"] for r in records})
-fields = ["spec_mid","spec_name","store_name","shop_no","dept_id","area_label","is_store",
-          "ny_month","ny_time","utc_time","operator","signed_qty_ml","loss_qty_ml","loss_usd","source"]
+
+# ===== write tidy loss_records.csv =====
+fields = ["spec_mid","spec_name","category","unit_label","store_name","shop_no","dept_id","area_label","is_store",
+          "ny_month","ny_time","utc_time","operator","signed_qty","loss_qty","loss_usd","source"]
 LOSS_CSV = os.path.join(OUT_DIR, "loss_records.csv")
 with open(LOSS_CSV, "w", newline="", encoding="utf-8") as f:
     w = csv.DictWriter(f, fieldnames=fields)
@@ -211,7 +210,7 @@ with open(LOSS_CSV, "w", newline="", encoding="utf-8") as f:
         w.writerow({k: r[k] for k in fields})
 print(f"wrote {LOSS_CSV}  ({len(records)} rows)")
 
-# ===== build per-store rollups, per-spec and aggregate =====
+# ===== per-spec rollups (single-SKU views; use native unit) =====
 def rollup_by_spec(records, spec_mid):
     sub = [r for r in records if r["spec_mid"] == spec_mid and r["is_store"]]
     groups = defaultdict(list)
@@ -219,46 +218,42 @@ def rollup_by_spec(records, spec_mid):
         groups[(r["dept_id"], r["shop_no"], r["store_name"], r["area_label"])].append(r)
     out = []
     for (dept_id, shop_no, store_name, area), g in groups.items():
-        m_map = defaultdict(float); m_usd = defaultdict(float)
+        m_qty = defaultdict(float); m_usd = defaultdict(float)
         op_qty = defaultdict(float); op_cnt = defaultdict(int)
         for r in g:
-            m_map[r["ny_month"]] += r["loss_qty_ml"]
+            m_qty[r["ny_month"]] += r["loss_qty"]
             m_usd[r["ny_month"]] += r["loss_usd"]
-            op_qty[r["operator"]] += r["loss_qty_ml"]
+            op_qty[r["operator"]] += r["loss_qty"]
             op_cnt[r["operator"]] += 1
-        monthly_ml  = [m_map.get(m, 0.0) for m in months_all]
+        monthly_qty = [m_qty.get(m, 0.0) for m in months_all]
         monthly_usd = [m_usd.get(m, 0.0) for m in months_all]
         sales_monthly = [SALES_MAP.get((dept_id, m), 0) for m in months_all]
-        total_ml = sum(monthly_ml); total_usd = sum(monthly_usd); total_sales = sum(sales_monthly)
-        # intensity = mL per 1000 orders (active months only)
-        intensity_monthly = []
-        for ml, s in zip(monthly_ml, sales_monthly):
-            intensity_monthly.append((ml / s * 1000.0) if s > 0 else 0.0)
+        total_qty = sum(monthly_qty); total_usd = sum(monthly_usd); total_sales = sum(sales_monthly)
+        intensity_monthly = [(q/s*1000.0) if s>0 else 0.0 for q, s in zip(monthly_qty, sales_monthly)]
         operators = []
         for name in sorted(op_qty, key=lambda k: -op_qty[k]):
             operators.append({"name": name, "qty": op_qty[name], "count": op_cnt[name],
-                              "share_pct": (op_qty[name] / total_ml * 100.0) if total_ml else 0.0})
-        last_idx = max((i for i, v in enumerate(monthly_ml) if v > 0), default=None)
+                              "share_pct": (op_qty[name] / total_qty * 100.0) if total_qty else 0.0})
+        last_idx = max((i for i, v in enumerate(monthly_qty) if v > 0), default=None)
         latest_mom = None
-        if last_idx is not None and last_idx >= 1 and monthly_ml[last_idx - 1] > 0:
-            latest_mom = (monthly_ml[last_idx] - monthly_ml[last_idx-1]) / monthly_ml[last_idx-1] * 100.0
-        worst_idx = max(range(len(monthly_ml)), key=lambda i: monthly_ml[i]) if monthly_ml else 0
-        # intensity total (all months pooled)
-        intensity_total = (total_ml / total_sales * 1000.0) if total_sales > 0 else None
+        if last_idx is not None and last_idx >= 1 and monthly_qty[last_idx - 1] > 0:
+            latest_mom = (monthly_qty[last_idx] - monthly_qty[last_idx-1]) / monthly_qty[last_idx-1] * 100.0
+        worst_idx = max(range(len(monthly_qty)), key=lambda i: monthly_qty[i]) if monthly_qty else 0
+        intensity_total = (total_qty / total_sales * 1000.0) if total_sales > 0 else None
         out.append({
             "dept_id": dept_id, "shop_no": shop_no, "store_name": store_name, "area": area,
-            "total_loss_ml": total_ml, "total_loss_usd": total_usd, "total_sales": total_sales,
+            "total_loss_qty": total_qty, "total_loss_usd": total_usd, "total_sales": total_sales,
             "record_count": len(g),
-            "monthly_ml": monthly_ml, "monthly_usd": monthly_usd,
+            "monthly_qty": monthly_qty, "monthly_usd": monthly_usd,
             "sales_monthly": sales_monthly, "intensity_monthly": intensity_monthly,
             "intensity_total": intensity_total,
-            "active_months": sum(1 for v in monthly_ml if v > 0),
-            "first_month": next((m for m, v in zip(months_all, monthly_ml) if v > 0), None),
+            "active_months": sum(1 for v in monthly_qty if v > 0),
+            "first_month": next((m for m, v in zip(months_all, monthly_qty) if v > 0), None),
             "last_active_month": months_all[last_idx] if last_idx is not None else None,
-            "latest_month_value_ml": monthly_ml[last_idx] if last_idx is not None else 0.0,
+            "latest_month_value_qty": monthly_qty[last_idx] if last_idx is not None else 0.0,
             "latest_mom_pct": latest_mom,
-            "worst_month": months_all[worst_idx] if monthly_ml else None,
-            "worst_month_value_ml": monthly_ml[worst_idx] if monthly_ml else 0.0,
+            "worst_month": months_all[worst_idx] if monthly_qty else None,
+            "worst_month_value_qty": monthly_qty[worst_idx] if monthly_qty else 0.0,
             "operators": operators,
             "top_operator": operators[0]["name"] if operators else None,
             "top_operator_share_pct": operators[0]["share_pct"] if operators else None,
@@ -267,65 +262,97 @@ def rollup_by_spec(records, spec_mid):
 
 stores_by_spec = {sp: rollup_by_spec(records, sp) for sp in SPECS}
 
-# also build an "ALL" view summed across specs
-def rollup_all(records):
-    sub = [r for r in records if r["is_store"]]
-    keys = set((r["dept_id"], r["shop_no"], r["store_name"], r["area_label"]) for r in sub)
+# ===== per-category rollups (mid-level cross-spec aggregation) =====
+def rollup_by_category(records, cat):
+    sub = [r for r in records if r["category"] == cat and r["is_store"]]
+    groups = defaultdict(list)
+    for r in sub:
+        groups[(r["dept_id"], r["shop_no"], r["store_name"], r["area_label"])].append(r)
     out = []
-    for (dept_id, shop_no, store_name, area) in keys:
-        gs = [r for r in sub if r["dept_id"] == dept_id and r["shop_no"] == shop_no]
-        m_map = defaultdict(float); m_usd = defaultdict(float)
-        op_qty = defaultdict(float); op_cnt = defaultdict(int)
-        spec_breakdown = defaultdict(lambda: {"ml": 0.0, "usd": 0.0, "count": 0})
-        for r in gs:
-            m_map[r["ny_month"]] += r["loss_qty_ml"]
+    for (dept_id, shop_no, store_name, area), g in groups.items():
+        m_usd = defaultdict(float)
+        for r in g:
             m_usd[r["ny_month"]] += r["loss_usd"]
-            op_qty[r["operator"]] += r["loss_qty_ml"]
-            op_cnt[r["operator"]] += 1
-            spec_breakdown[r["spec_mid"]]["ml"] += r["loss_qty_ml"]
-            spec_breakdown[r["spec_mid"]]["usd"] += r["loss_usd"]
-            spec_breakdown[r["spec_mid"]]["count"] += 1
-        monthly_ml  = [m_map.get(m, 0.0) for m in months_all]
         monthly_usd = [m_usd.get(m, 0.0) for m in months_all]
         sales_monthly = [SALES_MAP.get((dept_id, m), 0) for m in months_all]
-        total_ml = sum(monthly_ml); total_usd = sum(monthly_usd); total_sales = sum(sales_monthly)
-        intensity_monthly = [(ml/s*1000.0) if s>0 else 0.0 for ml, s in zip(monthly_ml, sales_monthly)]
-        intensity_total = (total_ml/total_sales*1000.0) if total_sales>0 else None
-        operators = []
-        for name in sorted(op_qty, key=lambda k: -op_qty[k]):
-            operators.append({"name": name, "qty": op_qty[name], "count": op_cnt[name],
-                              "share_pct": (op_qty[name]/total_ml*100.0) if total_ml else 0.0})
-        last_idx = max((i for i, v in enumerate(monthly_ml) if v > 0), default=None)
-        latest_mom = None
-        if last_idx is not None and last_idx >= 1 and monthly_ml[last_idx - 1] > 0:
-            latest_mom = (monthly_ml[last_idx]-monthly_ml[last_idx-1])/monthly_ml[last_idx-1]*100.0
-        worst_idx = max(range(len(monthly_ml)), key=lambda i: monthly_ml[i]) if monthly_ml else 0
+        total_usd = sum(monthly_usd); total_sales = sum(sales_monthly)
         out.append({
             "dept_id": dept_id, "shop_no": shop_no, "store_name": store_name, "area": area,
-            "total_loss_ml": total_ml, "total_loss_usd": total_usd, "total_sales": total_sales,
-            "record_count": len(gs),
-            "monthly_ml": monthly_ml, "monthly_usd": monthly_usd,
+            "total_loss_usd": total_usd, "total_sales": total_sales,
+            "record_count": len(g),
+            "monthly_usd": monthly_usd,
+            "sales_monthly": sales_monthly,
+        })
+    return out
+
+stores_by_cat = {cat_id: rollup_by_category(records, cat_id) for cat_id, _ in CATEGORIES}
+
+# ===== ALL rollup (USD only — units mix across SKUs) =====
+def rollup_all(records):
+    sub = [r for r in records if r["is_store"]]
+    groups = defaultdict(list)
+    for r in sub:
+        groups[(r["dept_id"], r["shop_no"], r["store_name"], r["area_label"])].append(r)
+    out = []
+    for (dept_id, shop_no, store_name, area), g in groups.items():
+        m_usd = defaultdict(float)
+        op_usd = defaultdict(float); op_cnt = defaultdict(int)
+        spec_breakdown = defaultdict(lambda: {"qty": 0.0, "usd": 0.0, "count": 0, "unit": ""})
+        cat_breakdown = defaultdict(lambda: {"usd": 0.0, "count": 0})
+        for r in g:
+            m_usd[r["ny_month"]] += r["loss_usd"]
+            op_usd[r["operator"]] += r["loss_usd"]
+            op_cnt[r["operator"]] += 1
+            sb = spec_breakdown[r["spec_mid"]]
+            sb["qty"]   += r["loss_qty"]
+            sb["usd"]   += r["loss_usd"]
+            sb["count"] += 1
+            sb["unit"]   = r["unit_label"]
+            cb = cat_breakdown[r["category"]]
+            cb["usd"]   += r["loss_usd"]
+            cb["count"] += 1
+        monthly_usd = [m_usd.get(m, 0.0) for m in months_all]
+        sales_monthly = [SALES_MAP.get((dept_id, m), 0) for m in months_all]
+        total_usd = sum(monthly_usd); total_sales = sum(sales_monthly)
+        # USD-based intensity (USD per 1k orders)
+        intensity_monthly = [(u/s*1000.0) if s>0 else 0.0 for u, s in zip(monthly_usd, sales_monthly)]
+        intensity_total = (total_usd / total_sales * 1000.0) if total_sales > 0 else None
+        operators = []
+        for name in sorted(op_usd, key=lambda k: -op_usd[k]):
+            operators.append({"name": name, "qty": op_usd[name], "count": op_cnt[name],
+                              "share_pct": (op_usd[name]/total_usd*100.0) if total_usd else 0.0})
+        last_idx = max((i for i, v in enumerate(monthly_usd) if v > 0), default=None)
+        latest_mom = None
+        if last_idx is not None and last_idx >= 1 and monthly_usd[last_idx - 1] > 0:
+            latest_mom = (monthly_usd[last_idx]-monthly_usd[last_idx-1])/monthly_usd[last_idx-1]*100.0
+        worst_idx = max(range(len(monthly_usd)), key=lambda i: monthly_usd[i]) if monthly_usd else 0
+        out.append({
+            "dept_id": dept_id, "shop_no": shop_no, "store_name": store_name, "area": area,
+            "total_loss_usd": total_usd, "total_sales": total_sales,
+            "record_count": len(g),
+            "monthly_usd": monthly_usd,
             "sales_monthly": sales_monthly, "intensity_monthly": intensity_monthly,
             "intensity_total": intensity_total,
-            "active_months": sum(1 for v in monthly_ml if v > 0),
-            "first_month": next((m for m, v in zip(months_all, monthly_ml) if v > 0), None),
+            "active_months": sum(1 for v in monthly_usd if v > 0),
+            "first_month": next((m for m, v in zip(months_all, monthly_usd) if v > 0), None),
             "last_active_month": months_all[last_idx] if last_idx is not None else None,
-            "latest_month_value_ml": monthly_ml[last_idx] if last_idx is not None else 0.0,
+            "latest_month_value_usd": monthly_usd[last_idx] if last_idx is not None else 0.0,
             "latest_mom_pct": latest_mom,
-            "worst_month": months_all[worst_idx] if monthly_ml else None,
-            "worst_month_value_ml": monthly_ml[worst_idx] if monthly_ml else 0.0,
+            "worst_month": months_all[worst_idx] if monthly_usd else None,
+            "worst_month_value_usd": monthly_usd[worst_idx] if monthly_usd else 0.0,
             "operators": operators,
             "top_operator": operators[0]["name"] if operators else None,
             "top_operator_share_pct": operators[0]["share_pct"] if operators else None,
-            "spec_breakdown": {k: v for k, v in spec_breakdown.items()},
+            "spec_breakdown": dict(spec_breakdown),
+            "cat_breakdown": dict(cat_breakdown),
         })
     return out
 
 stores_all = rollup_all(records)
 
-# ===== status flags (compute on ALL aggregate) =====
-def add_stats(stores):
-    totals = [s["total_loss_ml"] for s in stores]
+# ===== status flags (compute on USD for ALL view) =====
+def add_stats_usd(stores):
+    totals = [s["total_loss_usd"] for s in stores]
     n = len(totals)
     sys_total = sum(totals)
     mean = sys_total / n if n else 0
@@ -337,35 +364,62 @@ def add_stats(stores):
     med = pct(st, 0.5); q1 = pct(st, 0.25); q3 = pct(st, 0.75)
     iqr = q3-q1; uf = q3+1.5*iqr
     std = math.sqrt(sum((t-mean)**2 for t in totals)/n) if n else 0
-    stores.sort(key=lambda s: -s["total_loss_ml"])
+    stores.sort(key=lambda s: -s["total_loss_usd"])
     for i, s in enumerate(stores, 1):
         s["rank"] = i
-        s["share_of_system_pct"] = (s["total_loss_ml"]/sys_total*100) if sys_total else 0
-        s["vs_mean_pct"] = ((s["total_loss_ml"]-mean)/mean*100) if mean else 0
-        s["vs_median_pct"] = ((s["total_loss_ml"]-med)/med*100) if med else 0
-        s["z_score"] = ((s["total_loss_ml"]-mean)/std) if std else 0
+        s["share_of_system_pct"] = (s["total_loss_usd"]/sys_total*100) if sys_total else 0
+        s["vs_mean_pct"] = ((s["total_loss_usd"]-mean)/mean*100) if mean else 0
+        s["vs_median_pct"] = ((s["total_loss_usd"]-med)/med*100) if med else 0
+        s["z_score"] = ((s["total_loss_usd"]-mean)/std) if std else 0
         s["percentile"] = ((n-i+1)/n*100) if n else 0
-        out = (iqr>0 and s["total_loss_ml"]>uf) or (std>0 and s["z_score"]>=2)
-        attn = (s["total_loss_ml"]>med and s["latest_mom_pct"] is not None and s["latest_mom_pct"]>50)
+        out = (iqr>0 and s["total_loss_usd"]>uf) or (std>0 and s["z_score"]>=2)
+        attn = (s["total_loss_usd"]>med and s["latest_mom_pct"] is not None and s["latest_mom_pct"]>50)
         s["status"] = "异常" if out else ("需关注" if attn else "正常")
     return {"mean": mean, "median": med, "q1": q1, "q3": q3, "iqr": iqr, "upper_fence": uf, "std": std,
-            "n": n, "sys_total_ml": sys_total}
+            "n": n, "sys_total_usd": sys_total}
 
-stats_all = add_stats(stores_all)
-stats_by_spec = {sp: add_stats(stores_by_spec[sp]) for sp in SPECS}
+def add_stats_qty(stores):
+    """Per-spec views: rank by total_loss_qty (native unit); status flags on qty."""
+    totals = [s["total_loss_qty"] for s in stores]
+    n = len(totals)
+    sys_total = sum(totals)
+    mean = sys_total / n if n else 0
+    st = sorted(totals)
+    def pct(arr, p):
+        if not arr: return 0
+        k = (len(arr)-1)*p; f=math.floor(k); c=math.ceil(k)
+        return arr[int(k)] if f==c else arr[f]*(c-k)+arr[c]*(k-f)
+    med = pct(st, 0.5); q1 = pct(st, 0.25); q3 = pct(st, 0.75)
+    iqr = q3-q1; uf = q3+1.5*iqr
+    std = math.sqrt(sum((t-mean)**2 for t in totals)/n) if n else 0
+    stores.sort(key=lambda s: -s["total_loss_qty"])
+    for i, s in enumerate(stores, 1):
+        s["rank"] = i
+        s["share_of_system_pct"] = (s["total_loss_qty"]/sys_total*100) if sys_total else 0
+        s["vs_mean_pct"] = ((s["total_loss_qty"]-mean)/mean*100) if mean else 0
+        s["vs_median_pct"] = ((s["total_loss_qty"]-med)/med*100) if med else 0
+        s["z_score"] = ((s["total_loss_qty"]-mean)/std) if std else 0
+        s["percentile"] = ((n-i+1)/n*100) if n else 0
+        out = (iqr>0 and s["total_loss_qty"]>uf) or (std>0 and s["z_score"]>=2)
+        attn = (s["total_loss_qty"]>med and s["latest_mom_pct"] is not None and s["latest_mom_pct"]>50)
+        s["status"] = "异常" if out else ("需关注" if attn else "正常")
+    return {"mean": mean, "median": med, "q1": q1, "q3": q3, "iqr": iqr, "upper_fence": uf, "std": std,
+            "n": n, "sys_total_qty": sys_total}
 
-# ===== system monthly across stores (ALL) =====
-sys_monthly_ml  = [sum(s["monthly_ml"][i]  for s in stores_all) for i in range(len(months_all))]
+stats_all = add_stats_usd(stores_all)
+stats_by_spec = {sp: add_stats_qty(stores_by_spec[sp]) for sp in SPECS}
+
+# ===== system monthly across stores (ALL = USD) =====
 sys_monthly_usd = [sum(s["monthly_usd"][i] for s in stores_all) for i in range(len(months_all))]
 sys_monthly_sales = [sum(s["sales_monthly"][i] for s in stores_all) for i in range(len(months_all))]
-sys_monthly_intensity = [(ml/s*1000.0) if s>0 else 0.0 for ml, s in zip(sys_monthly_ml, sys_monthly_sales)]
+sys_monthly_intensity = [(u/s*1000.0) if s>0 else 0.0 for u, s in zip(sys_monthly_usd, sys_monthly_sales)]
 def mom_series(xs):
     o=[None]
     for i in range(1,len(xs)):
         p=xs[i-1]
         o.append(None if p==0 else (xs[i]-p)/p*100.0)
     return o
-sys_mom_ml = mom_series(sys_monthly_ml)
+sys_mom_usd = mom_series(sys_monthly_usd)
 
 # ===== non-store rollup =====
 non_store_rec = [r for r in records if not r["is_store"]]
@@ -374,23 +428,21 @@ ns_groups = defaultdict(list)
 for r in non_store_rec:
     ns_groups[(r["dept_id"], r["store_name"])].append(r)
 for (dept_id, dept_name), g in ns_groups.items():
-    m_map = defaultdict(float); m_usd = defaultdict(float)
+    m_usd = defaultdict(float)
     for r in g:
-        m_map[r["ny_month"]] += r["loss_qty_ml"]
         m_usd[r["ny_month"]] += r["loss_usd"]
-    monthly_ml = [m_map.get(m, 0.0) for m in months_all]
     monthly_usd = [m_usd.get(m, 0.0) for m in months_all]
     non_stores.append({
         "dept_id": dept_id, "shop_no": "NON-STORE", "store_name": dept_name,
         "area": "非门店",
-        "total_loss_ml": sum(monthly_ml), "total_loss_usd": sum(monthly_usd),
+        "total_loss_usd": sum(monthly_usd),
         "record_count": len(g),
-        "monthly_ml": monthly_ml, "monthly_usd": monthly_usd,
-        "first_month": next((m for m, v in zip(months_all, monthly_ml) if v > 0), None),
-        "last_active_month": next((m for m, v in zip(reversed(months_all), reversed(monthly_ml)) if v > 0), None),
+        "monthly_usd": monthly_usd,
+        "first_month": next((m for m, v in zip(months_all, monthly_usd) if v > 0), None),
+        "last_active_month": next((m for m, v in zip(reversed(months_all), reversed(monthly_usd)) if v > 0), None),
         "top_operator": max(
             (r["operator"] for r in g),
-            key=lambda op: sum(rr["loss_qty_ml"] for rr in g if rr["operator"] == op),
+            key=lambda op: sum(rr["loss_usd"] for rr in g if rr["operator"] == op),
             default=None),
     })
 
@@ -400,100 +452,123 @@ MATRIX_CSV = os.path.join(OUT_DIR, "store_month_matrix.csv")
 SPEC_CSV   = os.path.join(OUT_DIR, "spec_summary.csv")
 
 bench_fields = ["rank","dept_id","shop_no","store_name","area",
-                "total_loss_ml","total_loss_usd","total_sales","intensity_per_1k_orders",
+                "total_loss_usd","total_sales","intensity_usd_per_1k_orders",
                 "record_count","active_months","first_month","last_active_month",
                 "share_of_system_pct","vs_mean_pct","vs_median_pct","z_score","percentile",
-                "latest_month_value_ml","latest_mom_pct","worst_month","worst_month_value_ml",
+                "latest_month_value_usd","latest_mom_pct","worst_month","worst_month_value_usd",
                 "top_operator","top_operator_share_pct","status"] + months_all
 with open(BENCH_CSV, "w", newline="", encoding="utf-8") as f:
     w = csv.writer(f)
     w.writerow(bench_fields)
     for s in stores_all:
         row = [s["rank"], s["dept_id"], s["shop_no"], s["store_name"], s["area"],
-               f"{s['total_loss_ml']:.2f}", f"{s['total_loss_usd']:.2f}", s["total_sales"],
+               f"{s['total_loss_usd']:.2f}", s["total_sales"],
                "" if s["intensity_total"] is None else f"{s['intensity_total']:.4f}",
                s["record_count"], s["active_months"], s["first_month"] or "", s["last_active_month"] or "",
                f"{s['share_of_system_pct']:.4f}", f"{s['vs_mean_pct']:.4f}", f"{s['vs_median_pct']:.4f}",
                f"{s['z_score']:.4f}", f"{s['percentile']:.2f}",
-               f"{s['latest_month_value_ml']:.2f}",
+               f"{s['latest_month_value_usd']:.2f}",
                "" if s["latest_mom_pct"] is None else f"{s['latest_mom_pct']:.4f}",
-               s["worst_month"] or "", f"{s['worst_month_value_ml']:.2f}",
+               s["worst_month"] or "", f"{s['worst_month_value_usd']:.2f}",
                s["top_operator"] or "",
                "" if s["top_operator_share_pct"] is None else f"{s['top_operator_share_pct']:.4f}",
                s["status"]]
-        row.extend(f"{v:.2f}" for v in s["monthly_ml"])
+        row.extend(f"{v:.2f}" for v in s["monthly_usd"])
         w.writerow(row)
     for s in non_stores:
         row = ["NS", s["dept_id"], s["shop_no"], s["store_name"], s["area"],
-               f"{s['total_loss_ml']:.2f}", f"{s['total_loss_usd']:.2f}", 0, "",
+               f"{s['total_loss_usd']:.2f}", 0, "",
                s["record_count"], 0, s["first_month"] or "", s["last_active_month"] or "",
                "","","","","","","","","",s["top_operator"] or "","","非门店"]
-        row.extend(f"{v:.2f}" for v in s["monthly_ml"])
+        row.extend(f"{v:.2f}" for v in s["monthly_usd"])
         w.writerow(row)
 print(f"wrote {BENCH_CSV}")
 
 with open(MATRIX_CSV, "w", newline="", encoding="utf-8") as f:
     w = csv.writer(f)
-    w.writerow(["dept_id","shop_no","store_name","area"] + months_all + ["Total_mL","Total_USD"])
+    w.writerow(["dept_id","shop_no","store_name","area"] + months_all + ["Total_USD"])
     for s in stores_all:
         w.writerow([s["dept_id"], s["shop_no"], s["store_name"], s["area"],
-                    *[f"{v:.2f}" for v in s["monthly_ml"]],
-                    f"{s['total_loss_ml']:.2f}", f"{s['total_loss_usd']:.2f}"])
-    col_t_ml = [sum(s["monthly_ml"][i] for s in stores_all) for i in range(len(months_all))]
-    col_t_usd = sum(s["total_loss_usd"] for s in stores_all)
-    w.writerow(["TOTAL","TOTAL","TOTAL","TOTAL", *[f"{v:.2f}" for v in col_t_ml],
-                f"{sum(col_t_ml):.2f}", f"{col_t_usd:.2f}"])
+                    *[f"{v:.2f}" for v in s["monthly_usd"]],
+                    f"{s['total_loss_usd']:.2f}"])
+    col_t_usd = [sum(s["monthly_usd"][i] for s in stores_all) for i in range(len(months_all))]
+    w.writerow(["TOTAL","TOTAL","TOTAL","TOTAL", *[f"{v:.2f}" for v in col_t_usd],
+                f"{sum(col_t_usd):.2f}"])
     for s in non_stores:
         w.writerow([s["dept_id"], "NON-STORE", "非门店:"+s["store_name"], "非门店",
-                    *[f"{v:.2f}" for v in s["monthly_ml"]],
-                    f"{s['total_loss_ml']:.2f}", f"{s['total_loss_usd']:.2f}"])
+                    *[f"{v:.2f}" for v in s["monthly_usd"]],
+                    f"{s['total_loss_usd']:.2f}"])
 print(f"wrote {MATRIX_CSV}")
 
-# spec summary
 with open(SPEC_CSV, "w", newline="", encoding="utf-8") as f:
     w = csv.writer(f)
-    w.writerow(["spec_mid","label","name","cost_per_ml","total_records",
-                "total_loss_ml","total_loss_usd","store_count_with_loss"])
+    w.writerow(["spec_mid","category","label","name","unit","cost_per_unit","total_records",
+                "total_loss_qty","total_loss_usd","store_count_with_loss"])
     for sp, meta in SPECS.items():
         srecs = [r for r in records if r["spec_mid"] == sp and r["is_store"]]
-        total_ml = sum(r["loss_qty_ml"] for r in srecs)
+        total_qty = sum(r["loss_qty"] for r in srecs)
         total_usd = sum(r["loss_usd"] for r in srecs)
         sc = len({r["dept_id"] for r in srecs})
-        w.writerow([sp, meta["label_cn"], meta["name"], f"{meta['cost_per_ml']:.6f}",
-                    len(srecs), f"{total_ml:.2f}", f"{total_usd:.2f}", sc])
+        w.writerow([sp, meta["cat"], meta["label_cn"], meta["name"], meta["unit_label"],
+                    f"{meta['cost_per_unit']:.6f}",
+                    len(srecs), f"{total_qty:.2f}", f"{total_usd:.2f}", sc])
 print(f"wrote {SPEC_CSV}")
 
+# ===== reconciliation =====
+total_rec_usd = sum(r["loss_usd"] for r in records if r["is_store"])
+total_store_usd = sum(s["total_loss_usd"] for s in stores_all)
+reconciliation = "PASS" if abs(total_rec_usd - total_store_usd) < 0.01 else "FAIL"
+
 # ===== dashboard payload =====
+specs_meta = []
+for k, v in SPECS.items():
+    srecs = [r for r in records if r["spec_mid"] == k and r["is_store"]]
+    has_data = len(srecs) > 0
+    specs_meta.append({
+        "mid": k, "name": v["name"], "label_cn": v["label_cn"],
+        "cat": v["cat"], "cat_label": v["cat_label"],
+        "spec_cost": v["spec_cost"], "cg_dly_ratio": v["cg_dly_ratio"],
+        "dly_use_ratio": v["dly_use_ratio"],
+        "use_unit_mid": v["use_unit_mid"], "unit_label": v["unit_label"],
+        "cost_per_unit": v["cost_per_unit"],
+        "has_data": has_data,
+        "record_count": len(srecs),
+        "total_loss_qty": sum(r["loss_qty"] for r in srecs),
+        "total_loss_usd": sum(r["loss_usd"] for r in srecs),
+    })
+
 payload = {
     "meta": {
-        "specs": [{"mid": k, **v} for k, v in SPECS.items()],
-        "primary_spec": "GS07788-01",
-        "period_start": months_all[0], "period_end": months_all[-1],
+        "specs": specs_meta,
+        "categories": [{"id": cid, "label": clabel} for cid, clabel in CATEGORIES],
+        "primary_spec": "ALL",
+        "period_start": months_all[0] if months_all else "",
+        "period_end":   months_all[-1] if months_all else "",
         "months": months_all,
         "areas": sorted({s["area"] for s in stores_all}),
         "generated": datetime.now(NY).strftime("%Y-%m-%d"),
         "timezone": "America/New_York (DST-aware via zoneinfo)",
-        "reconciliation": "PASS",
-        "has_reference": True,
+        "reconciliation": reconciliation,
         "has_usd": True,
         "dst_drift_count": len(dst_drift),
         "record_count": len([r for r in records if r["is_store"]]),
         "non_store_record_count": len(non_store_rec),
         "store_count": len(stores_all),
         "non_store_count": len(non_stores),
-        "grand_total_ml": stats_all["sys_total_ml"],
+        "spec_count": len(SPECS),
+        "spec_with_data_count": sum(1 for s in specs_meta if s["has_data"]),
         "grand_total_usd": sum(s["total_loss_usd"] for s in stores_all),
-        "system_monthly_ml": sys_monthly_ml,
         "system_monthly_usd": sys_monthly_usd,
         "system_monthly_sales": sys_monthly_sales,
         "system_monthly_intensity": sys_monthly_intensity,
-        "system_mom_pct": sys_mom_ml,
-        "system_latest_mom_pct": sys_mom_ml[-1] if sys_mom_ml else None,
+        "system_mom_pct": sys_mom_usd,
+        "system_latest_mom_pct": sys_mom_usd[-1] if sys_mom_usd else None,
         "stats_all": stats_all,
         "stats_by_spec": stats_by_spec,
     },
     "stores_all": stores_all,
     "stores_by_spec": stores_by_spec,
+    "stores_by_cat": stores_by_cat,
     "non_stores": non_stores,
 }
 PAYLOAD = os.path.join(OUT_DIR, "dashboard_payload.json")
@@ -502,36 +577,28 @@ with open(PAYLOAD, "w", encoding="utf-8") as f:
 print(f"wrote {PAYLOAD}")
 
 # ===== summary =====
-def _fmom(v): return "—" if v is None else f"{v:+.1f}%"
 print("\n" + "="*78)
 print("BUILD V2 SUMMARY")
 print("="*78)
-print(f"Specs covered     : {list(SPECS.keys())}")
+print(f"Specs covered     : {len(SPECS)} total, {len(specs_with_data)} with records, {len(SPECS)-len(specs_with_data)} empty")
 print(f"Records (store)   : {len([r for r in records if r['is_store']])}")
 print(f"Records (non-store): {len(non_store_rec)}")
 print(f"Stores            : {len(stores_all)}")
 print(f"Months            : {months_all[0]} → {months_all[-1]} ({len(months_all)} months)")
-print(f"Grand loss (mL)   : {stats_all['sys_total_ml']:,.2f}")
-print(f"Grand loss (USD)  : ${sum(s['total_loss_usd'] for s in stores_all):,.2f}")
-print(f"Timezone          : America/New_York (DST-aware)")
-print(f"DST drift rows    : {len(dst_drift)}  (= rows where NY-month != fixed-UTC-5-month)")
+print(f"Grand loss (USD)  : ${stats_all['sys_total_usd']:,.2f}")
+print(f"Reconciliation    : {reconciliation}")
 print()
-print("Per-spec totals:")
-for sp, meta in SPECS.items():
-    srecs = [r for r in records if r["spec_mid"] == sp and r["is_store"]]
-    if srecs:
-        print(f"  {sp:<12} {meta['label_cn']:<22} records={len(srecs):>4} "
-              f"mL={sum(r['loss_qty_ml'] for r in srecs):>14,.2f} "
-              f"USD=${sum(r['loss_usd'] for r in srecs):>9,.2f} "
-              f"cost/mL=${meta['cost_per_ml']:.6f}")
+print("Per-category USD totals:")
+cat_totals = defaultdict(float)
+cat_counts = defaultdict(int)
+for r in records:
+    if r["is_store"]:
+        cat_totals[r["category"]] += r["loss_usd"]
+        cat_counts[r["category"]] += 1
+for cid, clabel in CATEGORIES:
+    print(f"  {cid:<10} {clabel:<26} USD=${cat_totals.get(cid, 0):>11,.2f}  records={cat_counts.get(cid, 0):>5}")
 
-print("\nTop 10 stores by total mL across all specs:")
+print("\nTop 10 stores by USD across all specs:")
 for s in stores_all[:10]:
-    intensity_str = f"{s['intensity_total']:.2f}" if s['intensity_total'] is not None else "—"
-    print(f"  #{s['rank']:>2} {s['store_name']:<22} mL={s['total_loss_ml']:>11,.0f} "
-          f"USD=${s['total_loss_usd']:>8,.2f} orders={s['total_sales']:>9,} "
-          f"intensity(mL/1k orders)={intensity_str:>6} status={s['status']}")
-
-print("\nDST-drift sample:")
-for d in dst_drift[:5]:
-    print(f"  spec={d['spec']} dept={d['dept']} UTC={d['utc']} NY-month={d['ny_month']} fixed-month={d['fixed_month']}")
+    intensity_str = f"${s['intensity_total']:.2f}" if s['intensity_total'] is not None else "—"
+    print(f"  #{s['rank']:>2} {s['store_name']:<22} USD=${s['total_loss_usd']:>9,.2f} orders={s['total_sales']:>9,} intensity(USD/1k)={intensity_str:>8} status={s['status']}")
