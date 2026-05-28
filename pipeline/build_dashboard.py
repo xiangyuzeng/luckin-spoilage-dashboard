@@ -60,6 +60,9 @@ HTML_TEMPLATE = r"""<!doctype html>
   .toolbar .group { display:flex; gap:6px; align-items:center; padding:4px 8px; background:var(--bg); border-radius:6px; }
   .toolbar .group label { margin-right:0; }
   .toolbar select option:disabled { color:#9aa0a6; font-style:italic; }
+  .metric-note { font-size:11px; color:var(--muted); margin-left:6px; max-width:260px; line-height:1.4; }
+  .gran-loading { font-size:11px; color:var(--primary); margin-left:6px; }
+  .axis-warn { font-size:11px; color:var(--amber); margin-left:6px; }
 
   main { padding:22px 28px 60px; }
   section { background:var(--card); border-radius:12px; box-shadow:0 2px 6px rgba(0,0,0,.04); padding:20px 22px; margin-bottom:22px; }
@@ -163,18 +166,29 @@ HTML_TEMPLATE = r"""<!doctype html>
       <option value="qty">报损量 (单位随规格)</option>
       <option value="intensity">损耗强度 (USD / 1k 单)</option>
     </select>
+    <span id="metricNote" class="metric-note"></span>
   </div>
-  <div><label>月份起</label><select id="fMonthFrom"></select></div>
-  <div><label>月份止</label><select id="fMonthTo"></select></div>
+  <div class="group">
+    <label>时间粒度</label>
+    <select id="fGran">
+      <option value="month">月</option>
+      <option value="week">周</option>
+      <option value="day">天</option>
+    </select>
+    <span id="granLoading" class="gran-loading"></span>
+  </div>
+  <div><label>起</label><select id="fMonthFrom"></select></div>
+  <div><label>止</label><select id="fMonthTo"></select></div>
   <div><label>门店</label><select id="fStore"></select></div>
   <div><label>排序</label>
     <select id="fSort">
       <option value="metric_desc">按当前指标（高→低）</option>
       <option value="metric_asc">按当前指标（低→高）</option>
-      <option value="latest_desc">按最新月</option>
-      <option value="mom_desc">按最新月环比</option>
+      <option value="latest_desc">按最新期</option>
+      <option value="mom_desc">按最新期环比</option>
     </select>
   </div>
+  <span id="axisWarn" class="axis-warn"></span>
   <button id="btnExportCsv">导出当前 CSV</button>
   <button id="btnPrint">打印 / 导出 PDF</button>
 </div>
@@ -303,15 +317,186 @@ const SPEC_COLORS = (() => {
 const CATEGORY_COLORS = Object.fromEntries(Object.entries(CATEGORY_HUE).map(([k,v]) => [k, `hsl(${v.h}, ${v.s}%, 45%)`]));
 
 const SPECS_BY_MID = Object.fromEntries(DATA.meta.specs.map(sp => [sp.mid, sp]));
+const SPEC_IDX_BY_MID = Object.fromEntries(DATA.meta.specs.map((sp, i) => [sp.mid, i]));
 
 const state = {
   spec: "ALL",
   metric: "usd",
+  gran: "month",
   monthFrom: DATA.meta.months[0],
   monthTo:   DATA.meta.months[DATA.meta.months.length - 1],
   selectedStore: null,
   sort: "metric_desc",
 };
+
+// ============================================================================
+// Granularity layer — month is the default and uses the precomputed payload
+// arrays directly (no fetch). Week/day lazy-load data/events.json on first
+// switch and derive bucketed series from it. All caches keyed by gran are
+// memoized; cleared if EVENTS reloads.
+// ============================================================================
+
+let EVENTS = null;                 // { stores_index, rows: [[date,store,spec,usd,qty], ...] }
+let storeIdxByKey = null;          // "dept_id|shop_no" → idx into EVENTS.stores_index
+const _allBucketsCache = {};       // gran → sorted bucket list (string)
+const _seriesCache = new Map();    // key: "slice|storeIdx|gran|metric" → series aligned to _allBucketsCache[gran]
+const _eventsLoadPromise = { value: null };
+
+function clearSeriesCache() { _seriesCache.clear(); for (const k of Object.keys(_allBucketsCache)) delete _allBucketsCache[k]; }
+
+// ISO 8601 week key for a "YYYY-MM-DD" date.
+function isoWeekKey(date) {
+  const [y, m, d] = date.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const dow = (dt.getUTCDay() + 6) % 7;  // Mon=0..Sun=6
+  dt.setUTCDate(dt.getUTCDate() - dow + 3);  // Thursday of current week
+  const isoYear = dt.getUTCFullYear();
+  const jan4 = new Date(Date.UTC(isoYear, 0, 4));
+  const jan4Dow = (jan4.getUTCDay() + 6) % 7;
+  jan4.setUTCDate(jan4.getUTCDate() - jan4Dow + 3);  // Thursday of week 1
+  const weekNum = 1 + Math.round((dt - jan4) / (7 * 86400000));
+  return `${isoYear}-W${String(weekNum).padStart(2, "0")}`;
+}
+// Inverse: Monday of a "YYYY-Www" key → "YYYY-MM-DD".
+function isoWeekMonday(weekKey) {
+  const m = /^(\d{4})-W(\d{2})$/.exec(weekKey);
+  if (!m) return null;
+  const isoYear = +m[1], weekNum = +m[2];
+  const jan4 = new Date(Date.UTC(isoYear, 0, 4));
+  const jan4Dow = (jan4.getUTCDay() + 6) % 7;
+  const mondayWeek1 = new Date(jan4);
+  mondayWeek1.setUTCDate(jan4.getUTCDate() - jan4Dow);
+  const monday = new Date(mondayWeek1);
+  monday.setUTCDate(mondayWeek1.getUTCDate() + (weekNum - 1) * 7);
+  return monday.toISOString().slice(0, 10);
+}
+function isoWeekRangeLabel(weekKey) {
+  const mon = isoWeekMonday(weekKey);
+  if (!mon) return weekKey;
+  const monDt = new Date(mon + "T00:00:00Z");
+  const sunDt = new Date(monDt);
+  sunDt.setUTCDate(monDt.getUTCDate() + 6);
+  return `${monDt.toISOString().slice(5,10)}–${sunDt.toISOString().slice(5,10)}`;
+}
+function dateToBucket(date, gran) {
+  if (gran === "day") return date;
+  if (gran === "month") return date.slice(0, 7);
+  return isoWeekKey(date);
+}
+// All bucket keys present in the dataset for a given granularity, sorted lexicographically.
+function getAllBuckets(gran) {
+  if (gran === "month") return DATA.meta.months;
+  if (_allBucketsCache[gran]) return _allBucketsCache[gran];
+  if (!EVENTS) return DATA.meta.months;
+  const set = new Set();
+  for (const r of EVENTS.rows) set.add(dateToBucket(r[0], gran));
+  const list = [...set].sort();
+  _allBucketsCache[gran] = list;
+  return list;
+}
+function bucketLabel(key, gran) {
+  if (gran === "week") return `${key.slice(0,4)}-${key.slice(5)} (${isoWeekRangeLabel(key)})`;
+  return key;
+}
+function bucketShort(key, gran) {
+  if (gran === "week") return key.slice(0,4) + "-" + key.slice(5);  // YYYY-Wxx
+  return key;
+}
+
+// Memoized series builder: returns an array aligned to getAllBuckets(gran).
+// storeIdx === null → sum across all stores. slice is "ALL" | "CAT:<id>" | "<spec_mid>".
+function seriesFor(slice, storeIdx, gran, metric) {
+  const k = `${slice}|${storeIdx === null ? "_" : storeIdx}|${gran}|${metric}`;
+  if (_seriesCache.has(k)) return _seriesCache.get(k);
+  const buckets = getAllBuckets(gran);
+  const idxOf = Object.fromEntries(buckets.map((b, i) => [b, i]));
+  const series = new Array(buckets.length).fill(0);
+  if (!EVENTS) { _seriesCache.set(k, series); return series; }
+  let specPred;
+  if (slice === "ALL") {
+    specPred = () => true;
+  } else if (slice.startsWith("CAT:")) {
+    const cat = slice.slice(4);
+    specPred = sp => DATA.meta.specs[sp]?.cat === cat;
+  } else {
+    const target = SPEC_IDX_BY_MID[slice];
+    if (target === undefined) { _seriesCache.set(k, series); return series; }
+    specPred = sp => sp === target;
+  }
+  const useQty = metric === "qty";
+  for (const r of EVENTS.rows) {
+    const s = r[1], sp = r[2];
+    if (storeIdx !== null && s !== storeIdx) continue;
+    if (!specPred(sp)) continue;
+    const b = dateToBucket(r[0], gran);
+    const i = idxOf[b];
+    if (i === undefined) continue;
+    series[i] += useQty ? r[4] : r[3];
+  }
+  _seriesCache.set(k, series);
+  return series;
+}
+
+// Fetch events.json once. Promise-memoized so concurrent gran switches share one fetch.
+function ensureEvents() {
+  if (EVENTS) return Promise.resolve(EVENTS);
+  if (_eventsLoadPromise.value) return _eventsLoadPromise.value;
+  const note = document.getElementById("granLoading");
+  if (note) note.textContent = "正在加载事件级数据…";
+  _eventsLoadPromise.value = fetch("data/events.json", { cache: "force-cache" })
+    .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+    .then(json => {
+      EVENTS = json;
+      storeIdxByKey = {};
+      EVENTS.stores_index.forEach((s, i) => { storeIdxByKey[`${s.dept_id}|${s.shop_no}`] = i; });
+      // Live reconciliation against payload — month totals must agree.
+      const monthIdx = Object.fromEntries(DATA.meta.months.map((m, i) => [m, i]));
+      const ev = new Array(DATA.meta.months.length).fill(0);
+      EVENTS.rows.forEach(r => { const i = monthIdx[r[0].slice(0, 7)]; if (i !== undefined) ev[i] += r[3]; });
+      DATA.meta.system_monthly_usd.forEach((v, i) => {
+        if (Math.abs(v - ev[i]) > 0.05) {
+          console.warn(`events reconciliation: month ${DATA.meta.months[i]}: events=$${ev[i].toFixed(2)} payload=$${v.toFixed(2)}`);
+        }
+      });
+      if (note) note.textContent = "";
+      return EVENTS;
+    })
+    .catch(err => {
+      console.error("events.json fetch failed:", err);
+      if (note) note.textContent = "事件数据加载失败，已回退到月维度";
+      state.gran = "month";
+      const fG = document.getElementById("fGran");
+      if (fG) fG.value = "month";
+      throw err;
+    });
+  return _eventsLoadPromise.value;
+}
+
+// Active axis domain for current granularity.
+function axisDomain() { return getAllBuckets(state.gran); }
+
+// Default time window when switching granularity (avoid 365-bar charts).
+function defaultWindowForGran(gran) {
+  const domain = gran === "month" ? DATA.meta.months : getAllBuckets(gran);
+  if (!domain.length) return [DATA.meta.months[0], DATA.meta.months.at(-1)];
+  if (gran === "month") return [domain[0], domain.at(-1)];
+  if (gran === "week") return [domain[Math.max(0, domain.length - 16)], domain.at(-1)];
+  return [domain[Math.max(0, domain.length - 30)], domain.at(-1)];  // day
+}
+function clampToDomain(b, domain, fallback) {
+  return domain.includes(b) ? b : fallback;
+}
+
+// Human-readable granularity label.
+function granLabelCn() { return state.gran === "month" ? "月" : (state.gran === "week" ? "周" : "天"); }
+// "12 个月" but "16 周" / "30 天" — 周/天 already function as measure words.
+function granCountLabel(n) {
+  if (state.gran === "month") return `${n} 个月`;
+  return `${n} ${granLabelCn()}`;
+}
+function periodOverPeriodLabel() {
+  return state.gran === "month" ? "环比" : (state.gran === "week" ? "周环比" : "日环比");
+}
 
 const storeKey = s => `${s.dept_id}|${s.shop_no}`;
 
@@ -334,20 +519,33 @@ function activeStoresAll() {
   return DATA.stores_by_spec[state.spec] || [];
 }
 
-// If ALL view, only USD metric is meaningful.
+// effectiveMetric enforces two constraints:
+//   1. ALL / category views can only use USD (units mix across SKUs) — qty → usd.
+//   2. Intensity requires monthly sales as denominator (not available sub-month) —
+//      intensity → usd when gran != month, with a UI note set elsewhere.
 function effectiveMetric() {
-  if (state.spec === "ALL" || state.spec.startsWith("CAT:")) {
-    // qty doesn't apply (units mix); fall back to USD
-    return state.metric === "qty" ? "usd" : state.metric;
-  }
-  return state.metric;
+  let m = state.metric;
+  if (m === "qty" && (state.spec === "ALL" || state.spec.startsWith("CAT:"))) m = "usd";
+  if (m === "intensity" && state.gran !== "month") m = "usd";
+  return m;
 }
 
+// monthlyArr returns the FULL-domain series for store s, aligned to:
+//   - DATA.meta.months when gran === "month"
+//   - getAllBuckets(state.gran) otherwise (derived from EVENTS.rows)
+// Month path stays on precomputed payload arrays — instant, no fetch.
 function monthlyArr(s) {
   const m = effectiveMetric();
-  if (m === "usd") return s.monthly_usd || [];
-  if (m === "intensity") return s.intensity_monthly || [];
-  return s.monthly_qty || s.monthly_usd || [];
+  if (state.gran === "month") {
+    if (m === "usd") return s.monthly_usd || [];
+    if (m === "intensity") return s.intensity_monthly || [];
+    return s.monthly_qty || s.monthly_usd || [];
+  }
+  // week / day — derive from EVENTS for the active spec slice.
+  if (!EVENTS || !storeIdxByKey) return [];
+  const sidx = storeIdxByKey[`${s.dept_id}|${s.shop_no}`];
+  if (sidx === undefined) return [];
+  return seriesFor(state.spec, sidx, state.gran, m);
 }
 function totalValue(s) {
   const m = effectiveMetric();
@@ -410,11 +608,42 @@ function initToolbar() {
 
   const fMF = document.getElementById("fMonthFrom");
   const fMT = document.getElementById("fMonthTo");
-  fMF.innerHTML = DATA.meta.months.map(m => `<option value="${m}">${m}</option>`).join("");
-  fMT.innerHTML = DATA.meta.months.map(m => `<option value="${m}">${m}</option>`).join("");
-  fMT.value = state.monthTo;
+  // Populate from/to from the active axis domain. Called again when gran changes.
+  function repopulateWindow() {
+    const domain = axisDomain();
+    if (!domain.length) return;
+    const opts = domain.map(b => `<option value="${b}">${state.gran === "week" ? bucketLabel(b, "week") : b}</option>`).join("");
+    fMF.innerHTML = opts;
+    fMT.innerHTML = opts;
+    state.monthFrom = clampToDomain(state.monthFrom, domain, domain[0]);
+    state.monthTo   = clampToDomain(state.monthTo,   domain, domain.at(-1));
+    fMF.value = state.monthFrom;
+    fMT.value = state.monthTo;
+  }
+  repopulateWindow();
   fMF.onchange = () => { state.monthFrom = fMF.value; render(); };
   fMT.onchange = () => { state.monthTo = fMT.value; render(); };
+
+  const fGran = document.getElementById("fGran");
+  fGran.value = state.gran;
+  fGran.onchange = async () => {
+    const prev = state.gran;
+    const next = fGran.value;
+    if (prev === next) return;
+    // Optimistic UI: if next != month and EVENTS not loaded, fetch first.
+    if (next !== "month") {
+      try { await ensureEvents(); }
+      catch { fGran.value = "month"; return; }
+    }
+    state.gran = next;
+    // Reset window to a sensible default for the new granularity.
+    const [f, t] = defaultWindowForGran(next);
+    state.monthFrom = f; state.monthTo = t;
+    // If intensity was selected, fall back to USD with a note (effectiveMetric handles it).
+    repopulateWindow();
+    updateMetricAvailability();
+    render();
+  };
 
   const fS = document.getElementById("fStore");
   fS.innerHTML = `<option value="">（全部 / 系统视图）</option>` +
@@ -426,17 +655,35 @@ function initToolbar() {
   document.getElementById("btnExportCsv").onclick = exportCurrentCsv;
 }
 
-function activeMonths() {
-  const all = DATA.meta.months;
-  const i1 = all.indexOf(state.monthFrom);
-  const i2 = all.indexOf(state.monthTo);
+// Window-filtered buckets in the ACTIVE axis (month/week/day).
+function activeMonths() { return activeBuckets(); }
+function activeBuckets() {
+  const all = axisDomain();
+  let i1 = all.indexOf(state.monthFrom);
+  let i2 = all.indexOf(state.monthTo);
+  if (i1 < 0) i1 = 0;
+  if (i2 < 0) i2 = all.length - 1;
   return all.slice(Math.min(i1, i2), Math.max(i1, i2) + 1);
 }
 
+// Sync the metric dropdown's disabled state + inline note when gran changes.
+function updateMetricAvailability() {
+  const fMet = document.getElementById("fMetric");
+  if (!fMet) return;
+  const intensityOpt = fMet.querySelector('option[value="intensity"]');
+  const note = document.getElementById("metricNote");
+  const monthOnly = state.gran !== "month";
+  if (intensityOpt) intensityOpt.disabled = monthOnly;
+  if (note) note.textContent = monthOnly && state.metric === "intensity"
+    ? "损耗强度需月度销量分母，仅月维度可用 — 已回退到 USD"
+    : (monthOnly ? "（损耗强度仅月维度可用）" : "");
+}
+
 function storeView(s, months) {
-  const idx = months.map(m => DATA.meta.months.indexOf(m));
+  const domain = axisDomain();
+  const idx = months.map(m => domain.indexOf(m));
   const arr = monthlyArr(s);
-  const mView = idx.map(i => arr[i] || 0);
+  const mView = idx.map(i => i >= 0 ? (arr[i] || 0) : 0);
   const total = mView.reduce((a,b)=>a+b, 0);
   let lastIdx = -1;
   for (let i = mView.length - 1; i >= 0; i--) if (mView[i] > 0) { lastIdx = i; break; }
@@ -480,13 +727,14 @@ function restoreCanvas(targetSelector, canvasHtml) {
 }
 
 function renderKpis(months, stores) {
+  const domain = axisDomain();
   const sysTotal = stores.reduce((a,s)=>a + s.total_view, 0);
   const recCount = stores.reduce((a,s)=>a + s.record_count, 0);
   const mean = stores.length ? sysTotal / stores.length : 0;
   const top = stores.slice().sort((a,b)=>b.total_view - a.total_view)[0];
   let latestMom = null;
   if (months.length >= 2) {
-    const sysM = months.map(m => stores.reduce((a,s)=>a + (monthlyArr(s)[DATA.meta.months.indexOf(m)]||0), 0));
+    const sysM = months.map(m => stores.reduce((a,s)=>a + (monthlyArr(s)[domain.indexOf(m)]||0), 0));
     const prev = sysM[sysM.length - 2], cur = sysM[sysM.length - 1];
     if (prev) latestMom = (cur - prev) / prev * 100;
   }
@@ -500,7 +748,7 @@ function renderKpis(months, stores) {
     scope = sp ? `${sp.label_cn}（${sp.mid}）` : state.spec;
   }
   document.getElementById("kpiScope").textContent =
-    `${scope} · ${months[0]} → ${months[months.length-1]} · 指标：${metricLabel()}`;
+    `${scope} · ${months[0]} → ${months[months.length-1]} · 粒度：${granLabelCn()} · 指标：${metricLabel()}`;
   const cells = [
     {label:"系统总" + metricLabel(), value: metricFmt(sysTotal), sub:"单位：" + metricUnit()},
     {label:"覆盖门店数", value: stores.length, sub:`记录数 ${recCount}`},
@@ -508,9 +756,9 @@ function renderKpis(months, stores) {
     {label:"最高门店", value: top ? top.store_name : "—",
       sub: top ? `${metricFmt(top.total_view)} · 占 ${fmtPctU(sysTotal ? top.total_view/sysTotal*100 : 0)}` : "",
       accent: true},
-    {label:"统计周期", value: `${months[0]} → ${months[months.length-1]}`, sub: `${months.length} 个月`},
+    {label:"统计周期", value: `${months[0]} → ${months[months.length-1]}`, sub: granCountLabel(months.length)},
     {label:"过期销毁记录数", value: recCount, sub:"reason = 015"},
-    {label:"系统最新月环比", value: fmtPct(latestMom), sub: months[months.length-1] || ""},
+    {label:"系统最新" + periodOverPeriodLabel(), value: fmtPct(latestMom), sub: months[months.length-1] || ""},
   ];
   document.getElementById("kpiGrid").innerHTML = cells.map(c => `
     <div class="kpi ${c.accent ? "accent" : ""}">
@@ -528,7 +776,7 @@ function renderAlerts(stores) {
   document.getElementById("alertStrip").innerHTML = flagged.map(s => {
     const reason = s.status === "异常"
       ? `统计离群：总量 ${metricFmt(s.total_view)}（z=${(s.z_score??0).toFixed(2)}）`
-      : `最新月环比 ${fmtPct(s.latest_mom_pct)}，且总量高于中位数`;
+      : `最新${periodOverPeriodLabel()} ${fmtPct(s.latest_mom_view ?? s.latest_mom_pct)}，且总量高于中位数`;
     const cls = STATUS_CLASS[s.status];
     return `<div class="alert-card ${cls}">
       <div class="title">${s.store_name} <span class="status-pill ${cls}">${s.status}</span></div>
@@ -575,7 +823,7 @@ function renderRank(stores) {
             return [
               `${metricFmt(s.total_view)} (占系统 ${fmtPctU(pct)})`,
               `较店均 ${fmtPct(mean ? (s.total_view-mean)/mean*100 : 0)}`,
-              `状态: ${s.status||"—"} · 活跃 ${s.active_view} 月`
+              `状态: ${s.status||"—"} · 活跃 ${granCountLabel(s.active_view)}`
             ];
           }
         }}
@@ -619,10 +867,12 @@ function renderRank(stores) {
     }]
   });
   const parts = [];
-  if (state.metric === "intensity")
+  if (state.metric === "intensity" && state.gran === "month")
     parts.push("强度口径：每千笔订单产生的过期销毁；销量数据来自 t_order_store_fact，cycle_type=hour 汇总。");
+  if (state.metric === "intensity" && state.gran !== "month")
+    parts.push("损耗强度需月度销量分母，仅月维度可用；当前已回退到 USD。");
   if (effectiveMetric() === "usd" || effectiveMetric() === "qty")
-    parts.push("绝对量口径会受门店开业时间影响（新店活跃月少）；切换至「损耗强度」可看销量平准化后的对比。");
+    parts.push(`绝对量口径会受门店开业时间影响（新店活跃期数少）；切换至「损耗强度」并选择月维度可看销量平准化后的对比。`);
   document.getElementById("rankCaveat").textContent = parts.join(" ");
 }
 
@@ -749,8 +999,8 @@ function renderLeague(months, stores) {
     ["rank","排名"], ["store_name","门店"], ["area","区域"],
     ["total_view",metricLabel()], ["share","占系统%"],
     ["total_loss_usd","累计 USD"], ["intensity_total","总强度"],
-    ["active_view","活跃月"],
-    ["spark","趋势"], ["latest_mom_view","最新月环比"], ["status","状态"],
+    ["active_view",`活跃${granLabelCn()}`],
+    ["spark","趋势"], ["latest_mom_view",`最新${periodOverPeriodLabel()}`], ["status","状态"],
   ];
   const sortKeyMap = { rank:"rank", store_name:"store_name", area:"area",
     total_view:"total_view", share:"total_view",
@@ -815,7 +1065,8 @@ function renderTrend(months, stores) {
   restoreCanvas("#trendBody", `<div class="chart-wrap"><canvas id="chartTrend"></canvas></div>`);
   if (!stores.length) { showEmpty("#trendBody", "暂无数据"); return; }
   if (chartTrend) chartTrend.destroy();
-  const sysSeries = months.map(m => stores.reduce((a,s)=>a + (monthlyArr(s)[DATA.meta.months.indexOf(m)]||0), 0));
+  const domain = axisDomain();
+  const sysSeries = months.map(m => stores.reduce((a,s)=>a + (monthlyArr(s)[domain.indexOf(m)]||0), 0));
   const meanSeries = sysSeries.map(v => stores.length ? v / stores.length : 0);
   const datasets = [
     { label:"系统合计", data: sysSeries, borderColor: PALETTE.navy, backgroundColor: PALETTE.navy,
@@ -824,7 +1075,7 @@ function renderTrend(months, stores) {
       borderDash:[6,4], fill:true, tension:.25, pointRadius:0 },
   ];
   stores.forEach((s, i) => {
-    const view = months.map(m => monthlyArr(s)[DATA.meta.months.indexOf(m)] || 0);
+    const view = months.map(m => monthlyArr(s)[domain.indexOf(m)] || 0);
     datasets.push({
       label: s.store_name, data: view,
       borderColor: hueColor(i), backgroundColor: hueColor(i),
@@ -833,13 +1084,22 @@ function renderTrend(months, stores) {
       hidden: state.selectedStore && state.selectedStore !== storeKey(s) && stores.length > 1,
     });
   });
+  // Rotate / thin x-axis labels when there are many buckets (week/day views).
+  const labels = months.map(m => state.gran === "week" ? bucketShort(m, "week") : m);
+  const xTickCfg = months.length > 14
+    ? { maxRotation: 60, minRotation: 45, autoSkip: true, maxTicksLimit: 16, font: { size: 10 } }
+    : { autoSkip: false };
   chartTrend = new Chart(document.getElementById("chartTrend"), {
     type: "line",
-    data: { labels: months, datasets },
+    data: { labels, datasets },
     options: { maintainAspectRatio:false,
       plugins: { legend:{ position:"top", labels:{ boxWidth:14, font:{ size:11 } } },
-        tooltip:{ callbacks:{ label: ctx => `${ctx.dataset.label}: ${metricFmt(ctx.parsed.y)}` } } },
-      scales: { y:{ beginAtZero:true, ticks:{ callback: v => v.toLocaleString() } } }
+        tooltip:{ callbacks:{
+          title: ctx => state.gran === "week" ? `${months[ctx[0].dataIndex]} (${isoWeekRangeLabel(months[ctx[0].dataIndex])})` : months[ctx[0].dataIndex],
+          label: ctx => `${ctx.dataset.label}: ${metricFmt(ctx.parsed.y)}`
+        } } },
+      scales: { x: { ticks: xTickCfg },
+                y: { beginAtZero:true, ticks:{ callback: v => v.toLocaleString() } } }
     }
   });
 }
@@ -854,11 +1114,19 @@ function renderHeat(months, stores) {
   const wrap = document.getElementById("heatWrap");
   if (!wrap) { document.getElementById("heatBody").innerHTML = `<div id="heatWrap"></div>`; }
   if (!stores.length) { document.getElementById("heatBody").innerHTML = `<div class="empty-state">暂无数据</div>`; return; }
+  // Too-wide guard: 60+ columns is unreadable on most screens.
+  const axisWarn = document.getElementById("axisWarn");
+  if (axisWarn) {
+    axisWarn.textContent = months.length > 60
+      ? `当前 ${granLabelCn()}维度共 ${months.length} 列，热力图过宽 — 建议缩小起/止范围。`
+      : "";
+  }
   const wrap2 = document.getElementById("heatWrap") || (() => {
     document.getElementById("heatBody").innerHTML = `<div id="heatWrap"></div>`;
     return document.getElementById("heatWrap");
   })();
-  const cells = stores.flatMap(s => months.map(m => monthlyArr(s)[DATA.meta.months.indexOf(m)] || 0));
+  const domain = axisDomain();
+  const cells = stores.flatMap(s => months.map(m => monthlyArr(s)[domain.indexOf(m)] || 0));
   const maxV = Math.max(...cells, 1);
   const cellColor = v => {
     if (v === 0) return "#FAFBFE";
@@ -868,12 +1136,13 @@ function renderHeat(months, stores) {
     const b = Math.round(251 + (192 - 251) * t);
     return `rgb(${r},${g},${b})`;
   };
-  const colTotals = months.map(m => stores.reduce((a,s)=>a + (monthlyArr(s)[DATA.meta.months.indexOf(m)] || 0), 0));
+  const colTotals = months.map(m => stores.reduce((a,s)=>a + (monthlyArr(s)[domain.indexOf(m)] || 0), 0));
   const grand = colTotals.reduce((a,b)=>a+b, 0);
   const sorted = stores.slice().sort((a,b)=>b.total_view - a.total_view);
-  let html = `<table class="heatmap"><thead><tr><th>门店</th>${months.map(m=>`<th>${m}</th>`).join("")}<th>总计</th></tr></thead><tbody>`;
+  const colHeader = m => state.gran === "week" ? bucketShort(m, "week") : m;
+  let html = `<table class="heatmap"><thead><tr><th>门店</th>${months.map(m=>`<th title="${bucketLabel(m, state.gran)}">${colHeader(m)}</th>`).join("")}<th>总计</th></tr></thead><tbody>`;
   sorted.forEach(s => {
-    const row = months.map(m => monthlyArr(s)[DATA.meta.months.indexOf(m)] || 0);
+    const row = months.map(m => monthlyArr(s)[domain.indexOf(m)] || 0);
     const rowT = row.reduce((a,b)=>a+b, 0);
     html += `<tr><td>${s.store_name}</td>${row.map(v =>
       `<td style="background:${cellColor(v)}; color:${v/maxV>.55?'#fff':'#1F2937'}">${v===0?'·':metricFmt(v)}</td>`).join("")}<td class="total">${metricFmt(rowT)}</td></tr>`;
@@ -912,15 +1181,15 @@ function renderDrill(months, stores) {
   let worstM = "—", worstV = 0;
   target.monthly_view.forEach((v, i) => { if (v > worstV) { worstV = v; worstM = months[i]; } });
   const k = [
-    {label:"总" + metricLabel(), value: metricFmt(target.total_view), sub:`活跃 ${target.active_view} 月`},
+    {label:"总" + metricLabel(), value: metricFmt(target.total_view), sub:`活跃 ${granCountLabel(target.active_view)}`},
     {label:"占系统%", value: fmtPctU(sysTotal ? target.total_view/sysTotal*100 : 0), sub:`排名 #${target.rank||"—"}`},
     {label:"较店均", value: fmtPct(mean ? (target.total_view-mean)/mean*100 : 0), sub:`店均 ${metricFmt(mean)}`},
     {label:"累计 USD", value: fmtUsd(target.total_loss_usd), sub: state.spec==="ALL" ? "全部规格" : ""},
     {label:"总订单", value: fmtN(target.total_sales,0), sub:"窗口期总订单数"},
     {label:"损耗强度", value: target.intensity_total==null?"—":fmtN(target.intensity_total,1), sub: (state.spec==="ALL"||state.spec.startsWith("CAT:"))?"USD/千单":"qty/千单"},
-    {label:"最新月", value: metricFmt(target.latest_view), sub: months[target.last_active_idx_view] || "—"},
-    {label:"最新月环比", value: fmtPct(target.latest_mom_view), sub:"较上一有数据月"},
-    {label:"最糟月份", value: worstM, sub: metricFmt(worstV)},
+    {label:"最新" + granLabelCn(), value: metricFmt(target.latest_view), sub: months[target.last_active_idx_view] || "—"},
+    {label:"最新" + periodOverPeriodLabel(), value: fmtPct(target.latest_mom_view), sub:`较上一有数据${granLabelCn()}`},
+    {label:"最糟" + granLabelCn(), value: worstM, sub: metricFmt(worstV)},
   ];
   document.getElementById("drillKpis").innerHTML = k.map(c => `
     <div class="kpi">
@@ -932,14 +1201,21 @@ function renderDrill(months, stores) {
     `主操作人：${target.top_operator || "—"}（占该店 ${fmtPctU(target.top_operator_share_pct||0)}）· z=${(target.z_score??0).toFixed(2)} · 百分位 ${fmtN(target.percentile,0)}`;
 
   if (chartDrillMonthly) chartDrillMonthly.destroy();
+  const drillLabels = months.map(m => state.gran === "week" ? bucketShort(m, "week") : m);
+  const drillTickCfg = months.length > 14
+    ? { maxRotation: 60, minRotation: 45, autoSkip: true, maxTicksLimit: 16, font: { size: 10 } }
+    : { autoSkip: false };
   chartDrillMonthly = new Chart(document.getElementById("chartDrillMonthly"), {
     type: "bar",
-    data: { labels: months, datasets: [
+    data: { labels: drillLabels, datasets: [
       { label: metricLabel(), data: target.monthly_view, backgroundColor: PALETTE.primary, borderRadius:4 }
     ]},
     options: { maintainAspectRatio:false,
-      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: ctx => metricFmt(ctx.parsed.y) }}},
-      scales: { y:{ beginAtZero:true, ticks:{ callback: v => v.toLocaleString() } } }
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{
+        title: ctx => state.gran === "week" ? `${months[ctx[0].dataIndex]} (${isoWeekRangeLabel(months[ctx[0].dataIndex])})` : months[ctx[0].dataIndex],
+        label: ctx => metricFmt(ctx.parsed.y) }}},
+      scales: { x:{ ticks: drillTickCfg },
+                y:{ beginAtZero:true, ticks:{ callback: v => v.toLocaleString() } } }
     }
   });
 
@@ -1000,7 +1276,8 @@ function exportCurrentCsv() {
   const stores = sortStores(activeStoresAll().map(s => storeView(s, months)));
   const headers = ["rank","dept_id","shop_no","store_name","area",
                    `total_${effectiveMetric()}`, "total_loss_usd", "total_sales", "intensity_per_1k",
-                   "active_months","record_count","status","spec_scope", ...months];
+                   `active_${state.gran === "month" ? "months" : (state.gran === "week" ? "weeks" : "days")}`,
+                   "record_count","status","spec_scope", ...months];
   const sysTotal = stores.reduce((a,s)=>a+s.total_view, 0) || 1;
   const rows = stores.map((s,i) => {
     const base = [i+1, s.dept_id, s.shop_no, s.store_name, s.area,
@@ -1011,18 +1288,23 @@ function exportCurrentCsv() {
                   s.active_view, s.record_count, s.status||"", state.spec];
     return base.concat(s.monthly_view.map(v => v.toFixed(2)));
   });
-  const csv = [headers, ...rows].map(r => r.map(c => {
+  // Prepend a header note row that records the granularity / metric / window.
+  const note = [`# spoilage export — gran=${state.gran} · metric=${effectiveMetric()} · spec=${state.spec} · window=${state.monthFrom}..${state.monthTo}`];
+  const csv = [note, headers, ...rows].map(r => r.map(c => {
     const x = String(c);
     return /[,"\n]/.test(x) ? `"${x.replace(/"/g,'""')}"` : x;
   }).join(",")).join("\n");
   const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = `spoilage_${state.spec.replace(/[^A-Za-z0-9_-]/g,"")}_${effectiveMetric()}_${state.monthFrom}_${state.monthTo}.csv`;
+  const safeFrom = state.monthFrom.replace(/[^A-Za-z0-9_-]/g, "");
+  const safeTo   = state.monthTo.replace(/[^A-Za-z0-9_-]/g, "");
+  a.href = url; a.download = `spoilage_${state.spec.replace(/[^A-Za-z0-9_-]/g,"")}_${state.gran}_${effectiveMetric()}_${safeFrom}_${safeTo}.csv`;
   a.click(); URL.revokeObjectURL(url);
 }
 
 function render() {
+  updateMetricAvailability();
   const months = activeMonths();
   let stores = activeStoresAll().map(s => storeView(s, months));
   stores = sortStores(stores);

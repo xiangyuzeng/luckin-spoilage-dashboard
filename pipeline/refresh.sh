@@ -40,6 +40,9 @@ fi
 # Step 2 — transform
 python3 pipeline/build_v2.py 2>&1 | tee -a "$LOG"
 
+# Step 2b — derive compact event table for the granularity selector
+python3 pipeline/build_events.py 2>&1 | tee -a "$LOG"
+
 # Step 3 — render
 python3 pipeline/build_dashboard.py 2>&1 | tee -a "$LOG"
 
@@ -50,6 +53,7 @@ cp output/store_benchmark.csv   docs/data/
 cp output/store_month_matrix.csv docs/data/
 cp output/spec_summary.csv      docs/data/
 cp output/dashboard_payload.json docs/data/
+cp output/events.json           docs/data/
 
 # Step 5 — build_meta
 python3 - <<'PY'
